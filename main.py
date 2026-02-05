@@ -2,34 +2,93 @@ import logging
 import os
 import sys
 import io
+import subprocess
+
+# ========== Cloud环境自动修复（核心） ==========
+def fix_cloud_environment():
+    """仅在Streamlit Cloud环境执行的系统依赖和Python依赖修复"""
+    if 'STREAMLIT_SERVER_TYPE' in os.environ:
+        # 1. 安装libGL等系统库（解决OCR/PDF处理依赖）
+        try:
+            subprocess.run(
+                ["apt-get", "update", "-y"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+            subprocess.run(
+                ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+            print("✅ Cloud系统库安装完成")
+        except Exception as e:
+            print(f"⚠️ 系统库安装警告：{str(e)}")
+        
+        # 2. 强制安装兼容版本的Python依赖（解决huggingface-hub冲突）
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "huggingface-hub==0.19.4", "transformers==4.36.2", "--force-reinstall"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+            print("✅ Python依赖版本修复完成")
+        except Exception as e:
+            print(f"⚠️ 依赖修复警告：{str(e)}")
+
+# 执行Cloud环境修复（仅首次运行）
+fix_cloud_environment()
+
+# ========== 基础配置与路径修复 ==========
 # 核心修复：将项目根目录添加到Python路径，确保能导入src下的模块
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.pdf_processor import PDFProcessor
-from src.vector_store import (
-    VectorStoreManager, process_pdfs_and_create_vector_store,
-    VectorStore, SmartVectorStore
-)
-from config import Config
-
 # 配置HF镜像源（提前配置，避免后续导入库时网络问题）
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
+# ========== Cloud环境路径适配函数 ==========
+def get_cloud_compatible_path(original_path):
+    """将本地路径转换为Cloud可写路径（/tmp），兼容本地/Cloud双环境"""
+    if 'STREAMLIT_SERVER_TYPE' in os.environ:
+        # Cloud环境：替换为/tmp目录（唯一可写路径）
+        cloud_path = original_path.replace("./data", "/tmp/data").replace("./chroma_db", "/tmp/chroma_db")
+        # 确保目录存在
+        os.makedirs(os.path.dirname(cloud_path), exist_ok=True)
+        return cloud_path
+    return original_path
 
 # 修复控制台编码问题（加固，兼容多系统）
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-# 配置日志（添加文件输出，方便排查问题）
+# ========== 导入自定义模块 ==========
+try:
+    from src.pdf_processor import PDFProcessor
+    from src.vector_store import (
+        VectorStoreManager, process_pdfs_and_create_vector_store,
+        VectorStore, SmartVectorStore
+    )
+    from config import Config
+except ImportError as e:
+    print(f"❌ 模块导入失败：{str(e)}")
+    print("⚠️ 请检查src目录是否存在，或项目路径是否正确")
+    sys.exit(1)
+
+# ========== 日志配置（适配Cloud路径） ==========
+log_file_path = get_cloud_compatible_path('pdf_vectordb.log')
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),  # 控制台输出
-        logging.FileHandler('pdf_vectordb.log', encoding='utf-8')  # 日志文件输出
+        logging.FileHandler(log_file_path, encoding='utf-8')  # 日志文件输出（适配Cloud路径）
     ]
 )
 logger = logging.getLogger(__name__)
 
+# ========== 核心业务函数 ==========
 def smart_processing_mode():
     """智能处理模式：只处理新文档"""
     print("\n🔄 智能处理模式启动...")
@@ -37,20 +96,21 @@ def smart_processing_mode():
     # 确保目录存在（调用Config方法，兜底创建）
     Config.create_directories()
     
-    # 校验PDF源目录是否存在且有文件
-    pdf_dir = "./data/raw_pdfs"
+    # 校验PDF源目录是否存在且有文件（适配Cloud路径）
+    pdf_dir = get_cloud_compatible_path("./data/raw_pdfs")
     if not os.path.exists(pdf_dir):
         print(f"❌ PDF源目录不存在: {pdf_dir}，已自动创建")
         os.makedirs(pdf_dir, exist_ok=True)
         return False
+    
     # 检查目录下是否有PDF文件
     pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
     if not pdf_files:
         print(f"❌ PDF目录 {pdf_dir} 中无任何PDF文件")
         return False
     
-    # 创建智能向量存储实例
-    vector_store = SmartVectorStore()
+    # 创建智能向量存储实例（适配Cloud路径）
+    vector_store = SmartVectorStore(persist_directory=get_cloud_compatible_path("./chroma_db"))
     
     # 加载和处理PDF
     pdf_processor = PDFProcessor()
@@ -83,8 +143,9 @@ def smart_processing_mode():
 
 def search_only_mode(vector_store=None):
     """只检索模式，不重新处理文档"""
+    # 适配Cloud路径创建向量库实例
     if vector_store is None:
-        vector_store = SmartVectorStore()
+        vector_store = SmartVectorStore(persist_directory=get_cloud_compatible_path("./chroma_db"))
     
     # 检查向量存储是否存在
     if not vector_store.vector_store_exists():
@@ -148,13 +209,14 @@ def force_reprocess_all():
     """强制重新处理所有文档"""
     print("🔄 强制重新处理所有文档模式启动...")
     
-    # 校验PDF源目录
-    pdf_dir = "./data/raw_pdfs"
+    # 校验PDF源目录（适配Cloud路径）
+    pdf_dir = get_cloud_compatible_path("./data/raw_pdfs")
     if not os.path.exists(pdf_dir) or not [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]:
         print(f"❌ PDF目录 {pdf_dir} 不存在或无PDF文件")
         return False
     
-    vector_store = SmartVectorStore()
+    # 适配Cloud路径创建向量库实例
+    vector_store = SmartVectorStore(persist_directory=get_cloud_compatible_path("./chroma_db"))
     pdf_processor = PDFProcessor()
     all_documents = pdf_processor.load_pdfs_from_directory(pdf_dir)
     
@@ -184,15 +246,15 @@ def auto_mode():
     """自动模式：检查并智能处理，然后进入搜索"""
     print("\n🤖 自动模式启动（推荐）...")
     
-    # 创建智能向量存储实例
-    vector_store = SmartVectorStore()
+    # 创建智能向量存储实例（适配Cloud路径）
+    vector_store = SmartVectorStore(persist_directory=get_cloud_compatible_path("./chroma_db"))
     
     # 检查向量存储是否存在
     if vector_store.vector_store_exists():
         print("✅ 检测到现有向量存储")
         
-        # 检查是否有新/更新文档
-        pdf_dir = "./data/raw_pdfs"
+        # 检查是否有新/更新文档（适配Cloud路径）
+        pdf_dir = get_cloud_compatible_path("./data/raw_pdfs")
         pdf_processor = PDFProcessor()
         all_documents = pdf_processor.load_pdfs_from_directory(pdf_dir) if os.path.exists(pdf_dir) else []
         
@@ -228,11 +290,11 @@ def main():
     print("📚 PDF知识库智能向量化处理系统")
     print("=" * 50)
 
-    # 显示向量数据库路径
-    test_store = SmartVectorStore()
+    # 显示向量数据库路径（适配Cloud路径）
+    test_store = SmartVectorStore(persist_directory=get_cloud_compatible_path("./chroma_db"))
     print(f"🔍 向量数据库存储路径: {os.path.abspath(test_store.persist_directory)}")
-    print(f"📁 PDF源文件目录: {os.path.abspath('./data/raw_pdfs')}")
-    print(f"📜 日志文件路径: {os.path.abspath('pdf_vectordb.log')}")
+    print(f"📁 PDF源文件目录: {os.path.abspath(get_cloud_compatible_path('./data/raw_pdfs'))}")
+    print(f"📜 日志文件路径: {os.path.abspath(get_cloud_compatible_path('pdf_vectordb.log'))}")
 
     # 菜单选项
     print("\n请选择运行模式：")
@@ -273,6 +335,7 @@ def main():
         else:
             print("❌ 无效输入，请输入1-5之间的有效编号")
 
+# ========== 程序入口 ==========
 if __name__ == "__main__":
     try:
         main()
