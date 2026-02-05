@@ -453,7 +453,17 @@ def main():
             with col2:
                 if st.button("测试连接", key="test_api"):
                     result = deepseek_api.test_api_connection()
-                    st.success(result["message"]) if result["success"] else st.error(result["message"])
+                    # 核心修复：强制字符串处理 + 格式标准化
+                    msg = str(result.get("message", "未知错误")).strip()
+                    if result.get("success", False):
+                        # 标准化成功提示，避免换行/特殊字符
+                        st.success(f"✅ API连接成功\n{msg.replace('✅', '').strip()}")
+                    else:
+                        # 截断错误信息 + 标准化格式，避免触发DataFrame解析
+                        error_detail = str(result.get("detail", ""))[:100]
+                        st.error(f"❌ API连接失败：{msg[:150]}\n{error_detail}")
+
+                
         else:
             password = st.text_input("密码", type="password", placeholder="默认：123456", key="pwd_input")
             col1, col2 = st.columns(2)
@@ -467,8 +477,14 @@ def main():
             with col2:
                 if st.button("测试连接", key="test_api2"):
                     result = deepseek_api.test_api_connection()
-                    st.success(result["message"]) if result["success"] else st.error(result["message"])
-        
+                    # 标准化修复（和test_api按钮逻辑统一）
+                    msg = str(result.get("message", "未知错误")).strip()
+                    if result.get("success", False):
+                        st.success(f"✅ API连接成功\n{msg.replace('✅', '').strip()}")
+                    else:
+                        error_detail = str(result.get("detail", ""))[:100]
+                        st.error(f"❌ API连接失败：{msg[:150]}\n{error_detail}")
+                    
         st.markdown("---")
         
         # 知识库初始化
