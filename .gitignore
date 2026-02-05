@@ -1,0 +1,19 @@
+# Python虚拟环境（不上传）
+venv/
+.venv/
+env/
+# Python缓存文件
+__pycache__/
+*.pyc
+*.pyo
+# 向量库（本地生成，Cloud端单独处理）
+chroma_db/
+# 日志文件
+*.log
+# Streamlit缓存
+.streamlit/
+# VS Code配置
+.vscode/
+# 临时文件
+tmp/
+/tmp/
