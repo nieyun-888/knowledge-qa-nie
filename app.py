@@ -17,8 +17,6 @@ except ImportError:
     from src.image_processor import image_processor
 from math import floor
 
-
-
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,18 +52,32 @@ if "last_uploaded_file" not in st.session_state:
 if "ocr_result" not in st.session_state:
     st.session_state.ocr_result = None
 
+# 添加自定义CSS实现按钮拉伸效果（兼容所有Streamlit版本）
+st.markdown("""
+    <style>
+    /* 让侧边栏按钮全屏宽度 */
+    div[data-testid="stSidebar"] div.stButton > button {
+        width: 100%;
+    }
+    /* 优化聊天界面样式 */
+    div.stChatMessage {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 class DeepSeekAPI:
     """DeepSeek API 管理类 - 官方原生版本"""
 
     def __init__(self):
         # DeepSeek 官方 API 地址
-        self.base_url = "https://api.deepseek.com/v1/chat/completions"
+        self.base_url = st.secrets.get("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1/chat/completions")
         self.model_name = "deepseek-chat"  # 官方标准模型名
 
         # 核心修复：先判断Secrets是否可用，本地无则跳过
         if 'api_key' not in st.session_state:
-            # 修复逻辑：本地环境跳过Secrets读取，Cloud环境才读取
             try:
                 # 仅当Secrets存在时才读取，避免本地报错
                 st.session_state.api_key = st.secrets.get("DEEPSEEK_API_KEY", None)
@@ -74,7 +86,6 @@ class DeepSeekAPI:
                 st.session_state.api_key = None
         if 'api_key_set' not in st.session_state:
             st.session_state.api_key_set = st.session_state.api_key is not None
-    
     
     @property
     def api_key(self):
@@ -152,8 +163,6 @@ class DeepSeekAPI:
         except Exception as e:
             return {"success": False, "message": f"异常：{str(e)}"}
 
-    
-    
     def get_answer(self, question: str, contexts: List[Dict], conversation_history: List[dict] = None) -> str:
         """获取答案 - 采用第二个代码的模板"""
         if not self.is_logged_in():
@@ -246,12 +255,9 @@ class DeepSeekAPI:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        import requests
-        from requests.exceptions import ReadTimeout, ConnectTimeout
         max_retry = 1  # 仅重试1次，避免多次请求
         retry_count = 0
         resp = None
-
 
         data = {
             "model": self.model_name,
@@ -272,13 +278,12 @@ class DeepSeekAPI:
             "max_tokens": 4000
         }
         
-
         try:
             while retry_count <= max_retry:
                 try:
                     resp = requests.post(self.base_url, headers=headers, json=data, timeout=(10,120))
                     break  # 请求成功，跳出重试循环
-                except (ReadTimeout, ConnectTimeout):
+                except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
                     retry_count += 1
                     if retry_count > max_retry:
                         raise  # 重试1次后仍超时，抛出原报错
@@ -331,49 +336,60 @@ class DeepSeekAPI:
             context_text += "-" * 60 + "\n"
         return context_text
 
+# 新增：Cloud环境判断函数（替代Config.is_streamlit_cloud）
+def is_streamlit_cloud():
+    """判断是否在Streamlit Cloud环境"""
+    return 'STREAMLIT_SERVER_TYPE' in os.environ
+
+# 新增：获取Chroma DB路径（兼容本地/Cloud）
+def get_chroma_db_path():
+    """获取向量库路径"""
+    # 优先使用Secrets配置的路径
+    try:
+        return st.secrets.get("CHROMA_DB_PATH", "/tmp/chroma_db")
+    except:
+        # 本地环境默认路径
+        return "./chroma_db"
 
 def init_vector_store_actual():
     """实际的向量存储初始化逻辑"""
     try:
-        # 核心调整：Cloud环境跳过本地目录校验（依赖提前上传的向量库）
-        from config import Config
-        chroma_db_path = Config.CHROMA_DB_PATH
+        # 核心调整：兼容Cloud环境的路径处理
+        chroma_db_path = get_chroma_db_path()
         local_chroma_path = "./chroma_db"
-        if os.path.exists(local_chroma_path) and os.listdir(local_chroma_path):
-            # 本地环境：使用本地目录
+        
+        # 本地环境优先使用本地目录
+        if not is_streamlit_cloud() and os.path.exists(local_chroma_path) and os.listdir(local_chroma_path):
             chroma_db_path = local_chroma_path
             st.info(f"✅ 检测到本地向量库，使用路径：{local_chroma_path}")
         else:
-            # Cloud环境：使用/tmp目录，先检测/tmp是否有上传的向量库
-            if Config.is_streamlit_cloud():
-                st.info(f"ℹ️ 未检测到本地向量库，Cloud环境使用临时目录：{chroma_db_path}")
-                # 检测/tmp是否有上传的向量库
+            # Cloud环境使用/tmp目录
+            if is_streamlit_cloud():
+                st.info(f"ℹ️ Streamlit Cloud环境，使用临时目录：{chroma_db_path}")
+                # 检测/tmp是否有向量库
                 if not os.path.exists(chroma_db_path) or not os.listdir(chroma_db_path):
-                    st.warning("⚠️ /tmp目录也未找到向量库！可选择：1.本地生成后上传到/tmp；2.跳过初始化（仅无法检索）")
-                    # 不终止流程，返回空实例+提示（保证App能运行）
-                    return SmartVectorStore(persist_directory=chroma_db_path), "⚠️ 未找到向量库，App可正常运行但无法检索PDF内容"
+                    st.warning("⚠️ /tmp目录未找到向量库！App可正常运行但无法检索PDF内容")
         
-        # 步骤2：创建向量存储实例（无论是否有本地库，都创建实例）
+        # 创建向量存储实例
         vector_store = SmartVectorStore(persist_directory=chroma_db_path)
         
-        # 步骤3：如果有向量库则加载，无则跳过（不终止）
+        # 加载现有向量库（如果存在）
         if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
             if vector_store.load_existing_vector_store():
-                # 测试检索（本地环境必测，Cloud环境可选）
+                # 测试检索
                 try:
                     test_results = vector_store.search_similar_documents("测试", k=1)
-                    return vector_store, f"✅ 知识库加载成功！（本地/Cloud：{not Config.is_streamlit_cloud()}/{Config.is_streamlit_cloud()}）"
+                    return vector_store, f"✅ 知识库加载成功！（环境：{'Cloud' if is_streamlit_cloud() else '本地'}）"
                 except Exception as e:
                     return vector_store, f"⚠️ 向量库测试检索失败（不影响基础运行）：{str(e)}"
             else:
                 return None, "❌ 向量库存在但加载失败，请检查文件完整性"
         else:
-            # 无向量库：返回空实例，保证App能运行（仅检索功能不可用）
+            # 无向量库：返回实例，保证App能运行
             return vector_store, "ℹ️ 未加载向量库，App基础功能正常，仅无法检索PDF内容"
             
     except Exception as e:
         return None, f"❌ 向量库初始化失败: {str(e)}"
-
 
 def initialize_vector_store():
     """初始化向量存储（带超时处理）"""
@@ -413,6 +429,7 @@ def initialize_vector_store():
                         
                         st.session_state.vector_store = vector_store
                         st.session_state.vector_store_initialized = True
+                        st.success(message)
                         return vector_store
                     else:
                         progress_bar.progress(100)
@@ -423,7 +440,7 @@ def initialize_vector_store():
                 except concurrent.futures.TimeoutError:
                     progress_bar.progress(100)
                     placeholder.empty()
-                    st.error("⚠️ 向量数据库加载超时，请检查数据库文件或重新运行 `python main.py`")
+                    st.error("⚠️ 向量数据库加载超时，请检查数据库文件或重新初始化")
                     return None
                     
         except Exception as e:
@@ -431,7 +448,6 @@ def initialize_vector_store():
             placeholder.empty()
             st.error(f"❌ 初始化异常: {str(e)}")
             return None
-
 
 def add_image_upload_section():
     """添加图片上传和识别功能"""
@@ -512,7 +528,6 @@ def add_image_upload_section():
             st.session_state.image_question = ""
             st.rerun()
 
-
 def main():
     # 页面标题
     st.markdown("<h1 style='text-align: center; color: #1f77b4;'>🎓 冰姐问答小课堂</h1>", unsafe_allow_html=True)
@@ -586,7 +601,8 @@ def main():
         
         # 知识库状态
         st.markdown("### 📚 知识库状态")
-        if st.button("🔄 初始化知识库", width='stretch', key="init_kb"):
+        # 修复：移除width='stretch'参数，通过CSS实现拉伸效果
+        if st.button("🔄 初始化知识库", key="init_kb"):
             vector_store = initialize_vector_store()
             if vector_store:
                 st.success("✅ 知识库初始化成功！")
@@ -742,12 +758,11 @@ python main.py  # 选择模式 1、2 或 4
                             contexts = []
                             for doc in search_results:
                                 contexts.append({
-                                # 保留前600字符+省略号，避免超长片段，600字符足够包含核心知识点
-                                'content': doc.page_content[:600] + "..." if len(doc.page_content) > 600 else doc.page_content,
-                                'source': doc.metadata.get('source', '未知'),
-                                'page': doc.metadata.get('page', '未知页码')
-                            })
-                                
+                                    # 保留前600字符+省略号，避免超长片段
+                                    'content': doc.page_content[:600] + "..." if len(doc.page_content) > 600 else doc.page_content,
+                                    'source': doc.metadata.get('source', '未知'),
+                                    'page': doc.metadata.get('page', '未知页码')
+                                })
                             
                             # 获取答案，传递对话历史（排除当前这条用户消息）
                             conversation_history = st.session_state.messages[:-1]
@@ -784,7 +799,6 @@ python main.py  # 选择模式 1、2 或 4
                         message_placeholder.error(error_msg)
                         st.session_state.messages.append({"role": "assistant", "content": error_msg})
                         logger.error(f"问答处理出错: {str(e)}")
-
 
 if __name__ == "__main__":
     main()
