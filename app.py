@@ -655,10 +655,10 @@ def main():
         st.markdown("### 💰 费用统计")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("累计Token", str(st.session_state.total_tokens_used), key="token_metric")
+            st.metric("累计Token", str(st.session_state.total_tokens_used))
         with col2:
-            st.metric("累计费用", str(st.session_state.total_cost), key="cost_metric")
-                
+            st.metric("累计费用", str(st.session_state.total_cost))
+        
         
         st.markdown("---")
         st.warning("**当前模式：仅检索模式**")
