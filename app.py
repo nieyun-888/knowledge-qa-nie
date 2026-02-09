@@ -655,9 +655,9 @@ def main():
         st.markdown("### 💰 费用统计")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("累计Token", f"{st.session_state.total_tokens_used:,}", key="token_metric_fixed")
+            st.metric("累计Token", str(st.session_state.total_tokens_used), key="token_metric")
         with col2:
-            st.metric("累计费用", f"¥{st.session_state.total_cost:.4f}", key="cost_metric_fixed")
+            st.metric("累计费用", str(st.session_state.total_cost), key="cost_metric")
                 
         
         st.markdown("---")
