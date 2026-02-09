@@ -608,7 +608,7 @@ def main():
                 if st.button("登录", key="login"):
                     if deepseek_api.login_with_password(password):
                         st.success("✅ 登录成功")
-                        time.sleep(1)  # 让用户看到消息
+                        time.sleep(0.6)  # 让用户看到消息
                         st.rerun()
                     else:
                         st.error("❌ 密码错误")
@@ -655,11 +655,10 @@ def main():
         st.markdown("### 💰 费用统计")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("累计Token", f"{st.session_state.total_tokens_used:,}", key=f"token_metric_{st.session_state.total_tokens_used}")
-            
-            
+            st.metric("累计Token", f"{st.session_state.total_tokens_used:,}", key="token_metric_fixed")
         with col2:
-            st.metric("累计费用", f"¥{st.session_state.total_cost:.4f}", key=f"cost_metric_{st.session_state.total_cost}")
+            st.metric("累计费用", f"¥{st.session_state.total_cost:.4f}", key="cost_metric_fixed")
+                
         
         st.markdown("---")
         st.warning("**当前模式：仅检索模式**")
