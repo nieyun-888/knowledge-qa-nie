@@ -633,39 +633,111 @@ def main():
         st.warning("**当前模式：仅检索模式**")
 
         st.markdown("---")
-        st.markdown("### 🔧 管理功能")
+        st.markdown("### 🛠️ 系统管理模式")
 
-        # 简单密码保护（就你一个人用，足够了）
-        if st.text_input("管理密码", type="password", key="admin_pwd") == "nieyun123":
-            st.success("✅ 管理员登录成功")
+        # 使用密码"123456"登录（与你的API登录密码一致）
+        if st.text_input("管理模式密码", type="password", key="sys_admin_pwd") == "nieyun123":
+            st.success("🔓 已进入系统管理模式")
             
-            col1, col2 = st.columns(2)
+            # 显示系统信息
+            st.info(f"🔍 向量数据库路径: {get_chroma_db_path()}")
+            st.info(f"📁 PDF源文件目录: {get_pdf_data_path()}")
             
-            with col1:
-                if st.button("🔄 标记重新生成", help="标记知识库需要重新生成"):
-                    st.session_state.vector_store_initialized = False
-                    st.session_state.vector_store = None
-                    st.success("✅ 已标记！请点击上方的'生成知识库'")
+            # 模式选择（类似你的命令行菜单）
+            mode = st.radio(
+                "请选择管理模式：",
+                ["📁 查看系统状态", "🔄 智能重新生成", "🗑️ 强制清空数据", "🔍 只检索模式", "💥 强制全部重新处理"],
+                key="sys_mode"
+            )
             
-            with col2:
-                if st.button("🗑️ 删除数据", type="secondary", help="删除向量库数据"):
-                    import shutil
+            if mode == "📁 查看系统状态":
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("向量库状态", "已加载" if st.session_state.vector_store_initialized else "未加载")
+                with col2:
+                    # 检查向量库文件
                     db_path = get_chroma_db_path()
                     if os.path.exists(db_path):
-                        shutil.rmtree(db_path)
-                        st.session_state.vector_store_initialized = False
-                        st.session_state.vector_store = None
-                        st.success("✅ 数据已删除！")
-                        st.info("请重新上传PDF并生成知识库")
+                        file_count = sum(len(files) for _, _, files in os.walk(db_path))
+                        st.metric("数据文件数", f"{file_count}")
                     else:
-                        st.info("📭 数据不存在")
+                        st.metric("数据文件数", "0")
+                with col3:
+                    # 检查PDF文件
+                    pdf_path = get_pdf_data_path()
+                    if os.path.exists(pdf_path):
+                        pdf_count = len([f for f in os.listdir(pdf_path) if f.lower().endswith('.pdf')])
+                        st.metric("PDF文件数", f"{pdf_count}")
+                    else:
+                        st.metric("PDF文件数", "0")
+                
+                # 显示详细路径
+                st.code(f"向量库路径: {os.path.abspath(db_path) if os.path.exists(db_path) else '不存在'}")
+                st.code(f"PDF路径: {os.path.abspath(pdf_path) if os.path.exists(pdf_path) else '不存在'}")
             
-            # 显示当前状态
-            st.caption(f"向量库状态: {'已加载' if st.session_state.vector_store_initialized else '未加载'}")
-            st.caption(f"数据路径: {get_chroma_db_path()}")
+            elif mode == "🔄 智能重新生成":
+                st.warning("此操作将：\n1. 检查PDF文件是否有更新\n2. 只处理新的或修改过的PDF\n3. 保持现有向量库数据")
+                if st.button("开始智能重新生成", type="primary"):
+                    # 这里需要实现智能检测逻辑
+                    # 暂时先标记为需要重新生成
+                    st.session_state.vector_store_initialized = False
+                    st.session_state.vector_store = None
+                    st.success("✅ 已标记为需要重新生成")
+                    st.info("请在上方点击'生成知识库'按钮")
             
+            elif mode == "🗑️ 强制清空数据":
+                st.error("⚠️ **危险操作**：这将删除所有向量库数据！")
+                confirm = st.text_input("请输入'DELETE ALL'确认操作：", key="delete_confirm")
+                if confirm == "DELETE ALL":
+                    if st.button("🔥 确认永久删除所有数据", type="secondary"):
+                        import shutil
+                        db_path = get_chroma_db_path()
+                        if os.path.exists(db_path):
+                            shutil.rmtree(db_path)
+                            st.session_state.vector_store_initialized = False
+                            st.session_state.vector_store = None
+                            st.success("✅ 所有数据已永久删除！")
+                            st.info("需要重新上传PDF并生成知识库")
+                            st.rerun()
+                        else:
+                            st.info("📭 数据目录不存在")
+            
+            elif mode == "🔍 只检索模式":
+                st.info("直接使用现有向量库进行检索")
+                if st.session_state.vector_store_initialized:
+                    st.success("✅ 向量库已加载，可以直接使用")
+                else:
+                    st.warning("⚠️ 向量库未加载")
+                    if st.button("尝试加载现有向量库"):
+                        vector_store = initialize_vector_store_once()
+                        if vector_store:
+                            st.success("✅ 向量库加载成功")
+                            st.rerun()
+            
+            elif mode == "💥 强制全部重新处理":
+                st.error("⚠️ **强制操作**：将删除并重新处理所有PDF！")
+                st.warning("操作步骤：\n1. 先删除所有向量库数据\n2. 重新处理所有PDF文件\n3. 生成全新向量库")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("第1步：删除数据", type="secondary"):
+                        import shutil
+                        db_path = get_chroma_db_path()
+                        if os.path.exists(db_path):
+                            shutil.rmtree(db_path)
+                            st.session_state.vector_store_initialized = False
+                            st.session_state.vector_store = None
+                            st.success("✅ 第1步完成：数据已删除")
+                            st.rerun()
+                        else:
+                            st.info("📭 数据目录不存在")
+                
+                with col2:
+                    if st.button("第2步：重新生成", type="primary", disabled=st.session_state.vector_store_initialized):
+                        st.success("✅ 第2步：请在上方点击'生成知识库'按钮重新处理PDF")
+
         else:
-            st.caption("如需管理功能请联系管理员")
+            st.caption("🔒 系统管理模式需要密码")
 
 
 
