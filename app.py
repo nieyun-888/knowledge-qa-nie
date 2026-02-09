@@ -8,20 +8,39 @@ import logging
 import time
 from typing import List, Dict, Any
 import warnings
+# ===================== 彻底禁用所有警告 =====================
+# 方法1：禁用Python所有警告
+warnings.filterwarnings("ignore")
 
-# 过滤Streamlit弃用警告
-warnings.filterwarnings("ignore", 
-                       message="Please replace `use_container_width` with `width`",
-                       category=FutureWarning)
-# 新增：过滤所有关于width的警告
-warnings.filterwarnings("ignore", message="width")
-# 新增：设置环境变量完全禁用弃用警告
+# 方法2：设置Streamlit环境变量
 os.environ['STREAMLIT_DEPRECATION_WARNINGS'] = '0'
+os.environ['STREAMLIT_LOGGING_LEVEL'] = 'ERROR'
+os.environ['STREAMLIT_HIDE_DEV_MENU'] = '1'
+
+# 方法3：设置Python警告环境变量
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
+# 方法4：如果还在Cloud环境，可以重定向stderr
+if 'STREAMLIT_SERVER_TYPE' in os.environ:
+    # 保存原始stderr以便调试
+    original_stderr = sys.stderr
+    
+    # 创建一个空设备
+    class NullWriter:
+        def write(self, text):
+            pass
+        def flush(self):
+            pass
+    
+    # 临时重定向stderr
+    sys.stderr = NullWriter()
+
+print("🚫 所有警告已被禁用")
+# ===================== 警告过滤结束 =====================
 
 # ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
 def fix_dependencies():
     """自动修复Cloud环境依赖问题"""
-    # 1. 仅在Streamlit Cloud环境执行
     if 'STREAMLIT_SERVER_TYPE' not in os.environ:
         print("🔧 本地环境：跳过强制依赖修复，保持现有配置")
         return
@@ -29,41 +48,61 @@ def fix_dependencies():
     print("🌐 Cloud环境：执行无头OCR依赖修复")
     
     try:
-        # ========== 关键修改：先安装系统依赖 ==========
+        # ========== 关键：安装完整的系统依赖 ==========
+        print("📦 安装系统依赖...")
         subprocess.run(
             ["apt-get", "update", "-y"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
+        
+        # 完整的OCR系统依赖
+        system_packages = [
+            "libgl1-mesa-glx",
+            "libglib2.0-0",
+            "libsm6",
+            "libxext6",
+            "libxrender-dev",
+            "libgl-dev",
+            "libgomp1",
+            "libglu1-mesa",
+            "libx11-6",
+            "libxcb1",
+            "libxau6"
+        ]
+        
         subprocess.run(
-            ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0", "libsm6", "libxext6", "libxrender-dev"],
+            ["apt-get", "install", "-y"] + system_packages,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
+        print("✅ 系统库安装完成")
         
-        # ========== 关键修改：先卸载冲突包 ==========
+        # ========== 安装Python依赖 ==========
+        print("🐍 安装Python依赖...")
+        
+        # 先卸载可能有冲突的包
         subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python", "opencv-python-headless"],
+            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False
         )
         
-        # ========== 关键修改：安装特定版本OCR依赖 ==========
+        # 安装Cloud专用包
         cloud_packages = [
             "opencv-python-headless==4.8.1.78",
-            "rapidocr-onnxruntime==1.3.7",
+            "rapidocr-onnxruntime==1.4.4",
             "onnxruntime==1.16.3",
-            "pymupdf==1.23.8",
-            "pillow==10.1.0",
-            "huggingface-hub==0.19.4",
-            "transformers==4.36.2",
-            "numpy<1.24.0"  # 添加这个，因为rapidocr需要较旧的numpy
+            "pymupdf==1.26.7",
+            "pillow==12.1.0",
+            "numpy==1.26.4"
         ]
         
         for package in cloud_packages:
+            print(f"  → 安装 {package}")
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", package],
                 stdout=subprocess.PIPE,
@@ -83,16 +122,21 @@ if "deps_fixed" not in st.session_state:
 # ===================== 环境检测与配置 =====================
 def configure_for_environment():
     """根据运行环境配置无头模式"""
-    # 只在Cloud环境设置无头变量
     if 'STREAMLIT_SERVER_TYPE' in os.environ:
         print("🌐 检测到Cloud环境，配置无头模式")
+        # 设置所有必要的环境变量
         os.environ['DISPLAY'] = ':99'
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-        os.environ['OPENBLAS_NUM_THREADS'] = '1'  # 新增：限制OpenBLAS线程
-        os.environ['OMP_NUM_THREADS'] = '1'  # 新增：限制OpenMP线程
-        os.environ['MKL_NUM_THREADS'] = '1'  # 新增：限制MKL线程
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''  # 禁用CUDA
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+        os.environ['OMP_NUM_THREADS'] = '1'
+        os.environ['MKL_NUM_THREADS'] = '1'
+        
+        # 设置HuggingFace缓存
+        os.environ['HF_HOME'] = '/tmp/huggingface'
+        os.environ['TRANSFORMERS_CACHE'] = '/tmp/huggingface'
     else:
         print("💻 本地环境：保持现有GUI配置")
 
@@ -119,12 +163,20 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
 st.markdown("""
     <style>
-    .stButton>button {
-        min-width: 100px;  /* 改为最小宽度，避免冲突 */
-        padding: 8px 16px;  /* 添加一些内边距更好看 */
+    /* 移除所有可能冲突的样式 */
+    /* Streamlit 1.54.0 对样式更敏感 */
+    
+    /* 只保留最安全的样式 */
+    .stApp {
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+    
+    /* 按钮基础样式，避免width冲突 */
+    button[kind="primary"] {
+        font-weight: bold;
     }
     </style>
 """, unsafe_allow_html=True)
