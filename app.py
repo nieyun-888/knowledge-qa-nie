@@ -8,98 +8,95 @@ import logging
 import time
 from typing import List, Dict, Any
 
-# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
-# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
+# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
 def fix_dependencies():
     """自动修复Cloud环境依赖问题"""
-    # 1. 仅在Streamlit Cloud环境执行
-    if 'STREAMLIT_SERVER_TYPE' not in os.environ:
+    # 【修改】更准确的Cloud环境检测
+    # Streamlit Cloud 通常会设置这些环境变量之一
+    cloud_indicators = [
+        'STREAMLIT_SERVER_TYPE',
+        'STREAMLIT_SERVER_BASEURL_PATH', 
+        'STREAMLIT_SERVER_PORT',
+        'STREAMLIT_SERVER_ADDRESS'
+    ]
+    
+    is_cloud = any(key in os.environ for key in cloud_indicators)
+    
+    if not is_cloud:
         print("🔧 本地环境：跳过强制依赖修复，保持现有配置")
         return
     
     print("🌐 Cloud环境：执行无头OCR依赖修复")
     
-    # 2. 安装系统库（解决libGL缺失）
+    # 【修改】安装系统库时添加更多权限和重试
     try:
+        print("📦 安装系统库: libgl1-mesa-glx libgomp1 libglib2.0-0")
+        
+        # 先更新apt
         subprocess.run(
             ["apt-get", "update", "-y"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
-        subprocess.run(
+        
+        # 安装必要的图形库
+        result = subprocess.run(
             ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True
+            text=True
         )
+        
+        if result.returncode == 0:
+            print("✅ 系统库安装成功")
+        else:
+            print(f"⚠️ 系统库安装可能有问题: {result.stderr[:200]}")
+            
     except Exception as e:
-        print(f"⚠️ 系统库安装警告：{str(e)}")
+        print(f"⚠️ 系统库安装异常: {str(e)}")
     
-    # 3. 强制安装兼容版本的Python依赖
+    # 【修改】简化Python依赖安装，只安装关键包
     try:
-        # 先卸载可能有问题的GUI版本（静默执行，不检查结果）
-        subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python"],
+        print("📦 安装关键Python依赖...")
+        
+        # 确保安装无头版本的OpenCV
+        ocv_result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "opencv-python-headless==4.8.1.78"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False  # 不强制检查，可能不存在
+            text=True
         )
         
-        # 【关键修复】安装正确的OCR包名称
-        # 注意：安装时用连字符"rapidocr-onnxruntime"，导入时用下划线"rapidocr_onnxruntime"
-        cloud_packages = [
-            "opencv-python-headless==4.8.1.78",
-            "rapidocr-onnxruntime==1.3.7",  # ← 包名（pip安装用）
-            "onnxruntime==1.16.3",
-            "pymupdf==1.23.8",
-            "pillow==10.1.0",
-            "huggingface-hub==0.19.4",
-            "transformers==4.36.2"
-        ]
+        if ocv_result.returncode == 0:
+            print("✅ opencv-python-headless 安装成功")
+        else:
+            print(f"⚠️ opencv-python-headless 安装问题: {ocv_result.stderr[:200]}")
         
-        # 打印信息，便于调试
-        print(f"📦 正在安装依赖: {cloud_packages}")
-        
-        for package in cloud_packages:
-            print(f"正在安装: {package}")
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", package, "--force-reinstall"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
-            if result.returncode == 0:
-                print(f"✅ 安装成功: {package}")
-            else:
-                print(f"⚠️ 安装可能有问题: {package}")
-        
-        print("✅ Cloud无头OCR依赖修复完成！")
-        
-        # 【新增】验证OCR包是否正确安装
-        print("🔍 验证OCR包安装状态...")
+        # 测试RapidOCR导入
+        print("🔍 测试RapidOCR导入...")
         try:
             import rapidocr_onnxruntime
-            print("✅ rapidocr_onnxruntime 导入成功")
-            print(f"  版本: {rapidocr_onnxruntime.__version__ if hasattr(rapidocr_onnxruntime, '__version__') else '未知'}")
-        except Exception as e:
-            print(f"❌ rapidocr_onnxruntime 导入失败: {e}")
-            # 尝试另一种导入方式
-            try:
-                import rapidocr
-                print("✅ rapidocr 导入成功（可能是旧版本）")
-            except Exception as e2:
-                print(f"❌ rapidocr 也导入失败: {e2}")
+            print(f"✅ RapidOCR 版本: {rapidocr_onnxruntime.__version__ if hasattr(rapidocr_onnxruntime, '__version__') else '已安装'}")
+        except ImportError as e:
+            print(f"❌ RapidOCR导入失败，尝试安装: {e}")
+            # 尝试安装
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "rapidocr-onnxruntime"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
         
     except Exception as e:
-        print(f"⚠️ 依赖修复警告：{str(e)}")
-
-
+        print(f"⚠️ Python依赖安装异常: {str(e)}")
 
 # 执行依赖修复（仅首次运行）
 if "deps_fixed" not in st.session_state:
+    print("🔧 开始执行依赖修复检查...")
     fix_dependencies()
     st.session_state.deps_fixed = True
+else:
+    print("🔧 依赖修复已执行过，跳过")
 
 # ===================== 环境检测与配置 =====================
 def configure_for_environment():
