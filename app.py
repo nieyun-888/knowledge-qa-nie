@@ -9,6 +9,7 @@ import time
 from typing import List, Dict, Any
 
 # ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
+# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
 def fix_dependencies():
     """自动修复Cloud环境依赖问题"""
     # 1. 仅在Streamlit Cloud环境执行
@@ -45,10 +46,11 @@ def fix_dependencies():
             check=False  # 不强制检查，可能不存在
         )
         
-        # Cloud专用无头OCR依赖包
+        # 【关键修复】安装正确的OCR包名称
+        # 注意：安装时用连字符"rapidocr-onnxruntime"，导入时用下划线"rapidocr_onnxruntime"
         cloud_packages = [
             "opencv-python-headless==4.8.1.78",
-            "rapidocr-onnxruntime==1.3.7",
+            "rapidocr-onnxruntime==1.3.7",  # ← 包名（pip安装用）
             "onnxruntime==1.16.3",
             "pymupdf==1.23.8",
             "pillow==10.1.0",
@@ -56,17 +58,43 @@ def fix_dependencies():
             "transformers==4.36.2"
         ]
         
+        # 打印信息，便于调试
+        print(f"📦 正在安装依赖: {cloud_packages}")
+        
         for package in cloud_packages:
-            subprocess.run(
+            print(f"正在安装: {package}")
+            result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", package, "--force-reinstall"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=True
             )
+            if result.returncode == 0:
+                print(f"✅ 安装成功: {package}")
+            else:
+                print(f"⚠️ 安装可能有问题: {package}")
         
         print("✅ Cloud无头OCR依赖修复完成！")
+        
+        # 【新增】验证OCR包是否正确安装
+        print("🔍 验证OCR包安装状态...")
+        try:
+            import rapidocr_onnxruntime
+            print("✅ rapidocr_onnxruntime 导入成功")
+            print(f"  版本: {rapidocr_onnxruntime.__version__ if hasattr(rapidocr_onnxruntime, '__version__') else '未知'}")
+        except Exception as e:
+            print(f"❌ rapidocr_onnxruntime 导入失败: {e}")
+            # 尝试另一种导入方式
+            try:
+                import rapidocr
+                print("✅ rapidocr 导入成功（可能是旧版本）")
+            except Exception as e2:
+                print(f"❌ rapidocr 也导入失败: {e2}")
+        
     except Exception as e:
         print(f"⚠️ 依赖修复警告：{str(e)}")
+
+
 
 # 执行依赖修复（仅首次运行）
 if "deps_fixed" not in st.session_state:
