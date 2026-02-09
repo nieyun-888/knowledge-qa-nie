@@ -238,7 +238,7 @@ class DeepSeekAPI:
 
     def get_answer(self, question: str, contexts: List[Dict], conversation_history: List[dict] = None) -> str:
         if not self.is_logged_in():
-            return "请先在侧边栏设置 DeepSeek API Key"
+            return "乖，请先登录或者输入API喔"
 
         context_text = self._build_context_text(contexts)
         
@@ -874,12 +874,12 @@ def main():
         if not deepseek_api.is_logged_in():
             st.warning("🔑 请先设置API Key")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
-            st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏设置DeepSeek API Key"})
+            st.session_state.messages.append({"role": "assistant", "content": "乖，请先登录或者输入API喔"})
             st.rerun()
         elif not st.session_state.vector_store_initialized:
             st.warning("📚 请先初始化知识库")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
-            st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏初始化知识库"})
+            st.session_state.messages.append({"role": "assistant", "content": "乖，请先登录或者输入API喔"})
             st.rerun()
         else:
             st.session_state.messages.append({"role": "user", "content": current_prompt})
