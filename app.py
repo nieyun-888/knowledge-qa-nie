@@ -18,8 +18,8 @@ def fix_dependencies():
     
     print("🌐 Cloud环境：执行无头OCR依赖修复")
     
-    # 2. 安装系统库（解决libGL缺失）
     try:
+        # ========== 关键修改：先安装系统依赖 ==========
         subprocess.run(
             ["apt-get", "update", "-y"],
             stdout=subprocess.PIPE,
@@ -27,25 +27,21 @@ def fix_dependencies():
             check=True
         )
         subprocess.run(
-            ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0"],
+            ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0", "libsm6", "libxext6", "libxrender-dev"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
-    except Exception as e:
-        print(f"⚠️ 系统库安装警告：{str(e)}")
-    
-    # 3. 强制安装兼容版本的Python依赖
-    try:
-        # 先卸载可能有问题的GUI版本（静默执行，不检查结果）
+        
+        # ========== 关键修改：先卸载冲突包 ==========
         subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python"],
+            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python", "opencv-python-headless"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False  # 不强制检查，可能不存在
+            check=False
         )
         
-        # Cloud专用无头OCR依赖包
+        # ========== 关键修改：安装特定版本OCR依赖 ==========
         cloud_packages = [
             "opencv-python-headless==4.8.1.78",
             "rapidocr-onnxruntime==1.3.7",
@@ -53,12 +49,13 @@ def fix_dependencies():
             "pymupdf==1.23.8",
             "pillow==10.1.0",
             "huggingface-hub==0.19.4",
-            "transformers==4.36.2"
+            "transformers==4.36.2",
+            "numpy<1.24.0"  # 添加这个，因为rapidocr需要较旧的numpy
         ]
         
         for package in cloud_packages:
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", package, "--force-reinstall"],
+                [sys.executable, "-m", "pip", "install", package],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=True
@@ -79,10 +76,13 @@ def configure_for_environment():
     # 只在Cloud环境设置无头变量
     if 'STREAMLIT_SERVER_TYPE' in os.environ:
         print("🌐 检测到Cloud环境，配置无头模式")
-        os.environ['DISPLAY'] = ':99'  # 虚拟显示
+        os.environ['DISPLAY'] = ':99'
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'  # 新增：限制OpenBLAS线程
+        os.environ['OMP_NUM_THREADS'] = '1'  # 新增：限制OpenMP线程
+        os.environ['MKL_NUM_THREADS'] = '1'  # 新增：限制MKL线程
     else:
         print("💻 本地环境：保持现有GUI配置")
 
@@ -628,6 +628,18 @@ def add_image_upload_section():
 
 # ===================== 主函数 =====================
 def main():
+    try:
+        from src.image_processor import image_processor
+        # 检查OCR引擎是否可用
+        if not hasattr(image_processor, 'ocr_engine') or image_processor.ocr_engine is None:
+            st.warning("⚠️ OCR引擎未初始化，尝试重新初始化...")
+            # 重新执行依赖修复
+            if "deps_fixed" in st.session_state:
+                del st.session_state.deps_fixed
+            fix_dependencies()
+    except Exception as e:
+        st.error(f"❌ OCR模块加载失败: {str(e)[:200]}")
+    
     # 页面标题
     st.markdown("<h1 style='text-align: center; color: #1f77b4;'>🎓 冰姐问答小课堂</h1>", unsafe_allow_html=True)
     st.markdown("---")
