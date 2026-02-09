@@ -745,7 +745,7 @@ def main():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("第1步：删除数据", type="secondary", key="step1_delete_btn):
+                    if st.button("第1步：删除数据", type="secondary", key="step1_delete_btn"):
                         import shutil
                         db_path = get_chroma_db_path()
                         if os.path.exists(db_path):
