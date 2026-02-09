@@ -6,7 +6,6 @@ import requests
 import json
 import logging
 import time
-import concurrent.futures
 from typing import List, Dict, Any
 
 # ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
@@ -18,7 +17,6 @@ def fix_dependencies():
     
     # 2. 安装系统库（解决libGL缺失）
     try:
-        st.info("🔧 正在安装系统依赖库...")
         subprocess.run(
             ["apt-get", "update", "-y"],
             stdout=subprocess.PIPE,
@@ -32,35 +30,31 @@ def fix_dependencies():
             check=True
         )
     except Exception as e:
-        st.warning(f"⚠️ 系统库安装警告：{str(e)}")
+        print(f"⚠️ 系统库安装警告：{str(e)}")
     
-    # 3. 强制安装兼容版本的Python依赖（解决huggingface-hub冲突）
+    # 3. 强制安装兼容版本的Python依赖
     try:
-        st.info("🔧 正在修复Python依赖版本...")
-        # 降级huggingface-hub到兼容版本
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "huggingface-hub==0.19.4", "--force-reinstall"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
-        # 锁定transformers版本
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "transformers==4.36.2", "--force-reinstall"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
-        # 安装无头版OpenCV
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "opencv-python-headless>=4.8.0.76", "--force-reinstall"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
-        st.success("✅ 依赖修复完成！")
+        print("✅ 依赖修复完成！")
     except Exception as e:
-        st.error(f"❌ 依赖修复失败：{str(e)}")
+        print(f"❌ 依赖修复失败：{str(e)}")
 
 # 执行依赖修复（仅首次运行）
 if "deps_fixed" not in st.session_state:
@@ -72,18 +66,15 @@ try:
     from src.vector_store import SmartVectorStore
     from src.image_processor import image_processor
 except ImportError:
-    # Cloud环境添加当前目录到Python路径
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from src.vector_store import SmartVectorStore
     from src.image_processor import image_processor
 from math import floor
 
 # ===================== 全局配置 =====================
-# 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 页面配置
 st.set_page_config(
     page_title="冰姐问答小课堂",
     page_icon="🎓",
@@ -91,7 +82,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 极简CSS（避免DOM冲突）
 st.markdown("""
     <style>
     .stButton>button {
@@ -131,19 +121,23 @@ def is_streamlit_cloud():
 def get_chroma_db_path():
     """获取向量库路径（兼容本地/Cloud）"""
     if is_streamlit_cloud():
-        return "/tmp/chroma_db"
+        # 重要：Streamlit Cloud的持久化目录
+        return "/home/appuser/chroma_db"
     return "./chroma_db"
+
+def get_pdf_data_path():
+    """获取PDF数据路径"""
+    if is_streamlit_cloud():
+        return "/home/appuser/data/raw_pdfs"
+    return "./data/raw_pdfs"
 
 # ===================== DeepSeek API 类 =====================
 class DeepSeekAPI:
-    """DeepSeek API 管理类 - 兼容Cloud环境"""
-
+    """DeepSeek API 管理类"""
     def __init__(self):
-        # DeepSeek 官方 API 地址
         self.base_url = "https://api.deepseek.com/v1/chat/completions"
         self.model_name = "deepseek-chat"
-
-        # 初始化API Key
+        
         if 'api_key' not in st.session_state:
             try:
                 st.session_state.api_key = st.secrets.get("DEEPSEEK_API_KEY", None)
@@ -157,23 +151,16 @@ class DeepSeekAPI:
         return st.session_state.api_key
 
     def set_api_key(self, api_key: str):
-        """设置API密钥"""
         if api_key and api_key.strip():
             st.session_state.api_key = api_key.strip()
             st.session_state.api_key_set = True
-            if len(api_key) > 12:
-                st.session_state.api_key_preview = api_key[:8] + "..." + api_key[-4:]
-            else:
-                st.session_state.api_key_preview = api_key
             return True
         return False
 
     def login_with_password(self, password: str) -> bool:
-        """简单密码登录"""
         if password == "123456":
             st.session_state.api_key = "sk-4f3e29df9fa54da8bd601ae780111df1"
             st.session_state.api_key_set = True
-            st.session_state.api_key_preview = "sk-4f3e...1df1"
             return True
         return False
 
@@ -181,7 +168,6 @@ class DeepSeekAPI:
         return st.session_state.api_key is not None and st.session_state.api_key.strip() != ""
 
     def test_api_connection(self) -> Dict:
-        """测试API连通性"""
         if not self.is_logged_in():
             return {"success": False, "message": "未设置 API Key"}
 
@@ -210,14 +196,11 @@ class DeepSeekAPI:
             return {"success": False, "message": f"网络/系统错误：{str(e)}"}
 
     def get_answer(self, question: str, contexts: List[Dict], conversation_history: List[dict] = None) -> str:
-        """获取答案 - 核心问答逻辑"""
         if not self.is_logged_in():
             return "请先在侧边栏设置 DeepSeek API Key"
 
-        # 构建上下文
         context_text = self._build_context_text(contexts)
         
-        # 构建对话历史
         history_text = ""
         if conversation_history:
             history_text = "\n\n之前的对话历史：\n"
@@ -225,39 +208,86 @@ class DeepSeekAPI:
                 role = "用户" if msg["role"] == "user" else "冰姐"
                 history_text += f"{role}：{msg['content']}\n"
 
-        # 构建提示词
-        prompt = f"""你是专业的知识问答助手"冰姐"，请根据提供的上下文和对话历史回答问题，信息不足时可补充专业知识。
+        prompt = f"""你是一个专业的知识问答助手冰姐。我将给你一些参考资料和对话历史，你主要根据提供的上下文信息回答用户问题，如果你觉得信息不够，则你就需要自己去网上去查找一下答案。
 
-上下文信息：
+上下文信息来自多个文档资料：
 {context_text}
 
 {history_text}
 用户问题：{question}
 
-请用温暖亲切的语气，按照以下结构回答（逻辑不通时可灵活调整）：
-## 🔍 思考过程
-乖，看完你的问题后，冰姐的答案是：[简洁答案]
+请特别注意：当前用户的问题"{question}"可能是基于之前对话的延续。请仔细理解对话历史，确保回答与之前的对话内容连贯一致。
 
-### 参考资料
-1. 《文档名》第X页：[相关内容]
-2. 《文档名》第X页：[相关内容]
+请你主要按照以下格式回答，如果你觉得逻辑不畅，也可以适当的改变一下方式：
+
+## 🔍 思考过程
+
+乖，看完你的问题之后，冰姐仔细思考了一下，先给你说我的答案是：
+[这里给出简洁明确的答案]
+
+在咱们之前的教材里也有涉及你的疑问，我给你找了出来，你可以在这里看看，也可以去教材里去看详细的内容：
+
+### 1. 第一个资料
+- **文档名称**：《文档名称》
+- **页码**：第X页
+- **相关内容**：从该文档中找到的具体内容描述...
+- **关键信息**：提取的关键知识点...
+
+### 2. 第二个资料 
+- **文档名称**：《文档名称》
+- **页码**：第X页
+- **相关内容**：从该文档中找到的具体内容描述...
+- **关键信息**：提取的关键知识点...
+
+### 3. 第三个资料
+- **文档名称**：《文档名称》
+- **页码**：第X页  
+- **相关内容**：从该文档中找到的具体内容描述...
+- **关键信息**：提取的关键知识点...
+
+### 4. 第四个资料
+- **文档名称**：《文档名称》
+- **页码**：第X页  
+- **相关内容**：从该文档中找到的具体内容描述...
+- **关键信息**：提取的关键知识点...
+
+### 5. 第五个资料
+- **文档名称**：《文档名称》
+- **页码**：第X页  
+- **相关内容**：从该文档中找到的具体内容描述...
+- **关键信息**：提取的关键知识点...
 
 ## 💡 综合答案
-[详细答案]
+
+基于以上分析，我才给你这个回答。[这里给出相对丰富的答案]
+乖，怕你不理解，冰姐再给你举一个具体的小例子。[根据这个同学的问题，再编写了一个与之相关的容易理解的例子]
 
 ## 📚 推荐阅读
-[针对性的学习建议]"""
+
+冰姐看到你在[这里给出同学提问涉及的主要知识点]这一方面确实存在薄弱点，冰姐建议你回头再看一下下面的资料，加深理解：
+- 《文档名称》第X页：[具体章节或内容]
+- 《文档名称》第X页：[具体章节或内容]
+- 《文档名称》第X页：[具体章节或内容]
+- 《文档名称》第X页：[具体章节或内容]
+- 《文档名称》第X页：[具体章节或内容]
+
+请确保：
+- 准确引用文档名称、页码和具体内容
+- 使用温暖亲切的"冰姐"语气
+- 答案要专业、准确、亲切
+- 特别注意保持对话的连贯性，理解用户问题中的指代关系
+- 如果用户的问题与之前的对话相关，请结合对话历史来理解问题的上下文
+- 并非要完全按照这个模式回答，如果这个回答模式确实不合适，那你就自己组织语言结构就可以，但大部分情况还是要以这个模式为主。请用温暖亲切的语气，按照以下结构回答（逻辑不通时可灵活调整）"""
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        # 构建请求数据
         data = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": "你是亲切专业的法律教育助手冰姐，擅长结合上下文和对话历史给出连贯、准确的回答"},
+                {"role": "system", "content": "你是一位专业的法律教育助手，名字叫冰姐，擅长从多个文档资料中提取准确信息，在资料不足的时候能够根据自己的法律知识补充资料，最后能给出结构清晰的回答。你特别注重对话的连贯性，能够理解用户问题中的指代关系，并基于之前的对话上下文给出连贯的回答。连续问答时，可适当承接上一句的话题延伸，保持自然的聊天感，不生硬"},
             ] + ([msg for msg in conversation_history[-5:]] if conversation_history else []) + [
                 {"role": "user", "content": prompt}
             ],
@@ -265,7 +295,6 @@ class DeepSeekAPI:
             "max_tokens": 4000
         }
 
-        # 带重试的API调用
         max_retry = 1
         retry_count = 0
         while retry_count <= max_retry:
@@ -274,17 +303,14 @@ class DeepSeekAPI:
                 resp.raise_for_status()
                 result = resp.json()
                 
-                # Token统计
                 usage = result.get("usage", {})
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
                 total_tokens = usage.get("total_tokens", 0)
                 
-                # 费用计算
                 PRICE_PER_1000_TOKENS = 0.0015
                 current_cost = (total_tokens * PRICE_PER_1000_TOKENS) / 1000
                 
-                # 更新状态
                 st.session_state.total_tokens_used += total_tokens
                 st.session_state.total_cost += current_cost
                 st.session_state.current_tokens = total_tokens
@@ -300,7 +326,6 @@ class DeepSeekAPI:
                 time.sleep(0.5)
 
     def _build_context_text(self, contexts: List[Dict]) -> str:
-        """构建上下文文本"""
         context_text = ""
         for i, ctx in enumerate(contexts, 1):
             source = ctx.get('source', '未知文档')
@@ -312,69 +337,120 @@ class DeepSeekAPI:
         return context_text
 
 # ===================== 向量库初始化 =====================
-def init_vector_store_actual():
-    """实际初始化向量库"""
+def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path):
+    """从PDF生成向量库"""
     try:
-        chroma_db_path = get_chroma_db_path()
-        
-        # 创建向量库实例
-        vector_store = SmartVectorStore(persist_directory=chroma_db_path)
-        
-        # 加载现有向量库
-        if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
-            if vector_store.load_existing_vector_store():
-                # 测试检索
-                try:
-                    vector_store.search_similar_documents("测试", k=1)
-                    return vector_store, f"✅ 知识库加载成功（环境：{'Cloud' if is_streamlit_cloud() else '本地'}）"
-                except Exception as e:
-                    return vector_store, f"⚠️ 检索测试失败：{str(e)}"
+        with st.spinner(f"🔄 正在处理PDF文件，这可能需要几分钟..."):
+            from src.pdf_processor import PDFProcessor
+            
+            pdf_processor = PDFProcessor()
+            documents = pdf_processor.load_pdfs_from_directory(pdf_dir)
+            
+            if not documents:
+                st.error("❌ 没有找到可处理的PDF内容")
+                return None
+            
+            chunks = pdf_processor.split_documents(documents)
+            
+            vector_store = SmartVectorStore(persist_directory=chroma_db_path)
+            success = vector_store.create_vector_store(chunks, clear_old=True)
+            
+            if success:
+                st.session_state.vector_store = vector_store
+                st.session_state.vector_store_initialized = True
+                
+                status_file = os.path.join(chroma_db_path, "generation_status.json")
+                status = {
+                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "count": vector_store.vector_store._collection.count() if hasattr(vector_store, 'vector_store') else 0
+                }
+                with open(status_file, 'w', encoding='utf-8') as f:
+                    json.dump(status, f, ensure_ascii=False, indent=2)
+                
+                st.success(f"✅ 知识库生成完成！共处理 {len(chunks)} 个文本块")
+                return vector_store
             else:
-                return None, "❌ 向量库加载失败"
-        else:
-            return vector_store, "ℹ️ 未找到向量库，基础功能正常"
+                st.error("❌ 知识库生成失败")
+                return None
+                
     except Exception as e:
-        return None, f"❌ 初始化失败: {str(e)}"
+        st.error(f"❌ 生成失败: {str(e)}")
+        return None
 
-def initialize_vector_store():
-    """带进度条的向量库初始化"""
+def initialize_vector_store_once():
+    """一次性初始化向量库，生成后永久保存"""
     if st.session_state.vector_store_initialized:
         return st.session_state.vector_store
     
-    placeholder = st.empty()
-    with placeholder.container():
-        st.info("🔄 正在初始化知识库...")
-        progress_bar = st.progress(0)
-        
+    chroma_db_path = get_chroma_db_path()
+    pdf_data_path = get_pdf_data_path()
+    
+    # 检查向量库是否已存在
+    if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
         try:
-            progress_bar.progress(20)
-            time.sleep(0.5)
-            
-            progress_bar.progress(60)
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(init_vector_store_actual)
-                vector_store, message = future.result(timeout=30)
-            
-            progress_bar.progress(100)
-            time.sleep(0.5)
-            placeholder.empty()
-            
-            if vector_store:
+            vector_store = SmartVectorStore(persist_directory=chroma_db_path)
+            if vector_store.load_existing_vector_store():
                 st.session_state.vector_store = vector_store
                 st.session_state.vector_store_initialized = True
-                st.success(message)
+                st.sidebar.success("✅ 加载现有知识库成功")
                 return vector_store
-            else:
-                st.error(message)
-                return None
-        except concurrent.futures.TimeoutError:
-            placeholder.empty()
-            st.error("⚠️ 知识库初始化超时")
-            return None
         except Exception as e:
-            placeholder.empty()
-            st.error(f"❌ 初始化异常: {str(e)}")
-            return None
+            st.sidebar.warning(f"⚠️ 加载失败: {e}")
+    
+    # 检查是否有PDF文件需要处理
+    if not os.path.exists(pdf_data_path):
+        st.sidebar.warning("📄 请先上传PDF文件")
+        return None
+    
+    pdf_files = [f for f in os.listdir(pdf_data_path) if f.lower().endswith('.pdf')]
+    if not pdf_files:
+        st.sidebar.warning("📄 请先上传PDF文件")
+        return None
+    
+    # 显示生成选项
+    with st.sidebar:
+        st.markdown("### 🏗️ 知识库生成")
+        if st.button("🚀 生成知识库", type="primary", key="generate_kb"):
+            return generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
+    
+    return None
+
+# ===================== PDF上传功能 =====================
+def handle_pdf_upload():
+    """处理PDF上传（在侧边栏中调用）"""
+    if not is_streamlit_cloud():
+        return
+    
+    pdf_data_path = get_pdf_data_path()
+    
+    # 检查是否已经有PDF文件
+    if os.path.exists(pdf_data_path) and any(f.endswith('.pdf') for f in os.listdir(pdf_data_path)):
+        return
+    
+    # 创建目录
+    os.makedirs(pdf_data_path, exist_ok=True)
+    os.makedirs(get_chroma_db_path(), exist_ok=True)
+    
+    with st.sidebar:
+        st.markdown("### 📄 PDF文件上传")
+        st.info("首次使用需要上传PDF文件")
+        
+        uploaded_files = st.file_uploader(
+            "选择PDF文件",
+            type=['pdf'],
+            accept_multiple_files=True,
+            key="pdf_uploader"
+        )
+        
+        if uploaded_files:
+            with st.spinner(f"正在上传 {len(uploaded_files)} 个PDF文件..."):
+                for uploaded_file in uploaded_files:
+                    file_path = os.path.join(pdf_data_path, uploaded_file.name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+            
+            st.success(f"✅ 已上传 {len(uploaded_files)} 个PDF文件")
+            st.rerun()
 
 # ===================== 图片上传/OCR功能 =====================
 def add_image_upload_section():
@@ -383,10 +459,8 @@ def add_image_upload_section():
         uploaded_file = st.file_uploader("选择图片", type=['png', 'jpg', 'jpeg', 'bmp'], key="image_uploader")
         
         if uploaded_file is not None:
-            # 显示图片预览
             image_processor.display_image_preview(uploaded_file, "识别图片")
             
-            # OCR识别
             if st.session_state.get('last_uploaded_file') != uploaded_file.name:
                 with st.spinner("正在识别文字..."):
                     result = image_processor.process_uploaded_image(uploaded_file)
@@ -396,7 +470,6 @@ def add_image_upload_section():
             else:
                 result = st.session_state.ocr_result
             
-            # 处理识别结果
             if result["success"]:
                 st.success("✅ 文字识别成功！")
                 recognized_text = st.text_area("识别结果（可编辑）", result["text"], height=150, key="ocr_text")
@@ -407,14 +480,13 @@ def add_image_upload_section():
                         full_question = f"{additional_question}\n\n{recognized_text}" if additional_question else recognized_text
                         st.session_state.image_question = full_question
                         st.session_state.image_processed = False
-                        st.success("✅ 问题已准备，正在处理...")
+                        st.success("✅ 冰姐正在阅读你的问题，稍等一下哈乖...")
                         st.rerun()
                     else:
                         st.error("请输入有效文字")
             else:
                 st.error(f"❌ 识别失败：{result['message']}")
         
-        # 重置按钮
         if st.button("重置图片上传", key="ocr_reset"):
             st.session_state.image_processed = False
             st.session_state.last_uploaded_file = None
@@ -423,7 +495,6 @@ def add_image_upload_section():
 
 # ===================== 主函数 =====================
 def main():
-    # 页面标题
     st.markdown("<h1 style='text-align: center; color: #1f77b4;'>🎓 冰姐问答小课堂</h1>", unsafe_allow_html=True)
     st.markdown("---")
     
@@ -437,7 +508,7 @@ def main():
         st.header("🔑 API 设置")
         st.info(f"API端点: `{deepseek_api.base_url}`")
         
-        # 登录方式选择
+        # API设置代码...
         login_method = st.radio("登录方式", ["直接输入API", "密码登录"])
         
         if login_method == "直接输入API":
@@ -448,22 +519,15 @@ def main():
                     if deepseek_api.set_api_key(api_key):
                         st.success("✅ API已设置")
                         st.rerun()
-                    else:
-                        st.error("❌ 请输入有效API Key")
             with col2:
                 if st.button("测试连接", key="test_api"):
                     result = deepseek_api.test_api_connection()
-                    # 核心修复：强制字符串处理 + 格式标准化
                     msg = str(result.get("message", "未知错误")).strip()
                     if result.get("success", False):
-                        # 标准化成功提示，避免换行/特殊字符
                         st.success(f"✅ API连接成功\n{msg.replace('✅', '').strip()}")
                     else:
-                        # 截断错误信息 + 标准化格式，避免触发DataFrame解析
                         error_detail = str(result.get("detail", ""))[:100]
                         st.error(f"❌ API连接失败：{msg[:150]}\n{error_detail}")
-
-                
         else:
             password = st.text_input("密码", type="password", placeholder="默认：123456", key="pwd_input")
             col1, col2 = st.columns(2)
@@ -472,32 +536,42 @@ def main():
                     if deepseek_api.login_with_password(password):
                         st.success("✅ 登录成功")
                         st.rerun()
-                    else:
-                        st.error("❌ 密码错误")
-            with col2:
-                if st.button("测试连接", key="test_api2"):
-                    result = deepseek_api.test_api_connection()
-                    # 标准化修复（和test_api按钮逻辑统一）
-                    msg = str(result.get("message", "未知错误")).strip()
-                    if result.get("success", False):
-                        st.success(f"✅ API连接成功\n{msg.replace('✅', '').strip()}")
-                    else:
-                        error_detail = str(result.get("detail", ""))[:100]
-                        st.error(f"❌ API连接失败：{msg[:150]}\n{error_detail}")
-                    
+        
         st.markdown("---")
         
-        # 知识库初始化
-        st.markdown("### 📚 知识库状态")
-        if st.button("🔄 初始化知识库", key="init_kb"):
-            initialize_vector_store()
-            st.rerun()
+        # PDF上传
+        handle_pdf_upload()
         
-        # 显示知识库状态
-        if st.session_state.vector_store_initialized:
+        st.markdown("---")
+        
+        # 知识库状态
+        st.markdown("### 📚 知识库状态")
+        
+        # 检查生成状态
+        chroma_db_path = get_chroma_db_path()
+        status_file = os.path.join(chroma_db_path, "generation_status.json")
+        
+        if os.path.exists(status_file):
+            with open(status_file, 'r', encoding='utf-8') as f:
+                status = json.load(f)
             st.success("✅ 知识库已就绪")
+            st.caption(f"生成时间: {status.get('generated_at', '未知')}")
+            st.caption(f"文本块数: {status.get('count', 0):,}")
+            
+            # 如果已初始化，不再显示按钮
+            if not st.session_state.vector_store_initialized:
+                if st.button("🔗 连接知识库", key="connect_kb"):
+                    vector_store = initialize_vector_store_once()
+                    if vector_store:
+                        st.success("✅ 知识库连接成功")
+                        st.rerun()
         else:
-            st.warning("⚠️ 知识库未初始化")
+            # 初始化向量库
+            vector_store = initialize_vector_store_once()
+            if vector_store:
+                st.success("✅ 知识库已就绪")
+            else:
+                st.warning("⚠️ 知识库未初始化")
         
         st.markdown("---")
         
@@ -509,12 +583,6 @@ def main():
         with col2:
             st.metric("累计费用", f"¥{st.session_state.total_cost:.4f}")
         
-        if st.session_state.current_tokens > 0:
-            with st.expander("本次详情"):
-                st.write(f"输入Token: {st.session_state.prompt_tokens}")
-                st.write(f"输出Token: {st.session_state.completion_tokens}")
-                st.write(f"费用: ¥{st.session_state.current_cost:.6f}")
-        
         st.markdown("---")
         st.warning("**当前模式：仅检索模式**")
 
@@ -523,18 +591,15 @@ def main():
     
     with col1:
         st.markdown("### 💬 对话界面")
-        # 显示聊天历史
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
     
     with col2:
-        # 图片上传功能
         add_image_upload_section()
         
         st.markdown("---")
         
-        # 知识库统计
         st.markdown("### 📊 知识库统计")
         if st.session_state.vector_store_initialized:
             try:
@@ -545,28 +610,20 @@ def main():
                     st.metric("文本块数", f"{count:,}")
                 with col_stat2:
                     st.metric("向量维度", "512")
-                with st.expander("详细信息", expanded=True):
-                    st.write(f"• 文档数：~{max(1, floor(count//80))}")
-                    st.write(f"• 模型：BGE-small-ZH_v1.5")
-                    st.progress(min(count/1000, 1.0))
             except Exception as e:
-                st.info("✅ 知识库已加载，统计信息暂不可用")
+                st.info("✅ 知识库已加载")
         else:
             st.warning("⚠️ 请先初始化知识库")
 
     # 处理用户输入
     current_prompt = None
-    # 处理图片识别的问题
     if st.session_state.image_question:
         current_prompt = st.session_state.image_question
         st.session_state.image_question = ""
-    # 处理普通聊天输入
     elif user_input := st.chat_input("乖，你有哪个地方不明白呢"):
         current_prompt = user_input
 
-    # 处理提问
     if current_prompt:
-        # 检查前置条件
         if not deepseek_api.is_logged_in():
             st.warning("🔑 请先设置API Key")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
@@ -578,39 +635,32 @@ def main():
             st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏初始化知识库"})
             st.rerun()
         else:
-            # 添加用户消息
             st.session_state.messages.append({"role": "user", "content": current_prompt})
             
-            # 生成回答
             with col1:
                 with st.chat_message("assistant"):
                     placeholder = st.empty()
                     placeholder.markdown("🧠 思考中...")
                     
                     try:
-                        # 检索相关文档
                         vector_store = st.session_state.vector_store
-                        with st.spinner("🔍 检索资料中..."):
+                        with st.spinner("🔍 乖，让冰姐想一下这个问题..."):
                             search_results = vector_store.search_similar_documents(current_prompt, k=8)
                         
                         if not search_results:
                             answer = "乖，这个问题冰姐暂时没有找到相关资料，课后我再详细给你讲哈～"
                         else:
-                            # 构建上下文
                             contexts = [{
                                 'content': doc.page_content,
                                 'source': doc.metadata.get('source', '未知'),
                                 'page': doc.metadata.get('page', '未知')
                             } for doc in search_results]
-                            # 获取回答
-                            with st.spinner("📝 冰姐正在整理答案..."):
+                            with st.spinner("📝 乖，稍等一下，让冰姐想一下这个问题..."):
                                 answer = deepseek_api.get_answer(current_prompt, contexts, st.session_state.messages[:-1])
                         
-                        # 显示答案
                         placeholder.markdown(answer)
                         st.session_state.messages.append({"role": "assistant", "content": answer})
                         
-                        # 显示参考资料
                         with st.expander("📄 参考资料", expanded=False):
                             for i, doc in enumerate(search_results[:5], 1):
                                 source = doc.metadata.get('source', '未知')
@@ -618,12 +668,10 @@ def main():
                                 doc_name = os.path.basename(source).rsplit('.', 1)[0] if '.' in source else source
                                 st.markdown(f"**资料{i}：《{doc_name}》第{page}页**")
                                 st.caption(doc.page_content[:200] + "...")
-                                st.divider()
                     except Exception as e:
                         error_msg = f"❌ 处理失败：{str(e)}"
                         placeholder.error(error_msg)
                         st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
-# ===================== 程序入口 =====================
 if __name__ == "__main__":
     main()
