@@ -716,16 +716,54 @@ def main():
                 if confirm == "DELETE ALL":
                     if st.button("🔥 确认永久删除所有数据", type="secondary", key="confirm_delete_btn"):
                         import shutil
+                        # 只在删除时执行重置
+                        def cleanup_chroma_resources():
+                            """清理ChromaDB相关资源"""
+                            try:
+                                # 1. 清除session state
+                                if 'vector_store' in st.session_state:
+                                    st.session_state.vector_store = None
+                                st.session_state.vector_store_initialized = False
+                                
+                                # 2. 如果有ChromaDB客户端，尝试清理
+                                try:
+                                    import chromadb
+                                    # 新版本chromadb可能有清理方法
+                                    chromadb.Client().clear_system_cache()
+                                except:
+                                    pass
+                                
+                                # 3. 垃圾回收
+                                import gc
+                                gc.collect()
+                                
+                                print("✅ ChromaDB资源已清理")
+                            except Exception as e:
+                                print(f"⚠️ 清理资源时出错: {e}")
+                        
+                        # 执行清理
+                        cleanup_chroma_resources()
+                        
+                        # 删除文件
                         db_path = get_chroma_db_path()
                         if os.path.exists(db_path):
-                            shutil.rmtree(db_path)
-                            st.session_state.vector_store_initialized = False
-                            st.session_state.vector_store = None
+                            # 先尝试正常删除
+                            try:
+                                shutil.rmtree(db_path)
+                            except:
+                                # 如果失败，等待后重试
+                                time.sleep(1)
+                                shutil.rmtree(db_path, ignore_errors=True)
+                            
                             st.success("✅ 所有数据已永久删除！")
                             st.info("需要重新上传PDF并生成知识库")
-                            st.rerun()
                         else:
                             st.info("📭 数据目录不存在")
+                        
+                        # 等待一下
+                        time.sleep(2)
+                        st.rerun()
+
             
             elif mode == "🔍 只检索模式":
                 st.info("直接使用现有向量库进行检索")
