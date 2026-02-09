@@ -7,12 +7,6 @@ import json
 import logging
 import time
 from typing import List, Dict, Any
-import warnings
-
-# 过滤Streamlit弃用警告
-warnings.filterwarnings("ignore", 
-                       message="Please replace `use_container_width` with `width`",
-                       category=FutureWarning)
 
 # ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
 def fix_dependencies():
@@ -24,8 +18,8 @@ def fix_dependencies():
     
     print("🌐 Cloud环境：执行无头OCR依赖修复")
     
+    # 2. 安装系统库（解决libGL缺失）
     try:
-        # ========== 关键修改：先安装系统依赖 ==========
         subprocess.run(
             ["apt-get", "update", "-y"],
             stdout=subprocess.PIPE,
@@ -33,21 +27,25 @@ def fix_dependencies():
             check=True
         )
         subprocess.run(
-            ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0", "libsm6", "libxext6", "libxrender-dev"],
+            ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
         )
-        
-        # ========== 关键修改：先卸载冲突包 ==========
+    except Exception as e:
+        print(f"⚠️ 系统库安装警告：{str(e)}")
+    
+    # 3. 强制安装兼容版本的Python依赖
+    try:
+        # 先卸载可能有问题的GUI版本（静默执行，不检查结果）
         subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python", "opencv-python-headless"],
+            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False
+            check=False  # 不强制检查，可能不存在
         )
         
-        # ========== 关键修改：安装特定版本OCR依赖 ==========
+        # Cloud专用无头OCR依赖包
         cloud_packages = [
             "opencv-python-headless==4.8.1.78",
             "rapidocr-onnxruntime==1.3.7",
@@ -55,13 +53,12 @@ def fix_dependencies():
             "pymupdf==1.23.8",
             "pillow==10.1.0",
             "huggingface-hub==0.19.4",
-            "transformers==4.36.2",
-            "numpy<1.24.0"  # 添加这个，因为rapidocr需要较旧的numpy
+            "transformers==4.36.2"
         ]
         
         for package in cloud_packages:
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", package],
+                [sys.executable, "-m", "pip", "install", package, "--force-reinstall"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=True
@@ -82,13 +79,10 @@ def configure_for_environment():
     # 只在Cloud环境设置无头变量
     if 'STREAMLIT_SERVER_TYPE' in os.environ:
         print("🌐 检测到Cloud环境，配置无头模式")
-        os.environ['DISPLAY'] = ':99'
+        os.environ['DISPLAY'] = ':99'  # 虚拟显示
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-        os.environ['OPENBLAS_NUM_THREADS'] = '1'  # 新增：限制OpenBLAS线程
-        os.environ['OMP_NUM_THREADS'] = '1'  # 新增：限制OpenMP线程
-        os.environ['MKL_NUM_THREADS'] = '1'  # 新增：限制MKL线程
     else:
         print("💻 本地环境：保持现有GUI配置")
 
@@ -244,7 +238,7 @@ class DeepSeekAPI:
 
     def get_answer(self, question: str, contexts: List[Dict], conversation_history: List[dict] = None) -> str:
         if not self.is_logged_in():
-            return "乖，请先登录或者输入API喔"
+            return "请先在侧边栏设置 DeepSeek API Key"
 
         context_text = self._build_context_text(contexts)
         
@@ -385,112 +379,45 @@ class DeepSeekAPI:
 
 # ===================== 向量库初始化 =====================
 def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path):
-    """从PDF生成向量库（安全分批版）"""
+    """从PDF生成向量库"""
     try:
-        import os
-        from src.pdf_processor import PDFProcessor
-        from src.vector_store import SmartVectorStore
-        
-        # 获取所有PDF文件
-        pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
-        total_files = len(pdf_files)
-        
-        if total_files == 0:
-            st.error("❌ 没有找到可处理的PDF内容")
-            return None
-        
-        # 显示开始信息
-        st.info(f"📚 发现 {total_files} 个PDF文件，开始分批处理...")
-        
-        # 设置批次大小（96个文件，每批8个，分12批）
-        batch_size = 8
-        total_batches = (total_files + batch_size - 1) // batch_size
-        
-        # 创建进度显示
-        progress_text = st.empty()
-        progress_bar = st.progress(0)
-        
-        all_documents = []
-        processed_count = 0
-        
-        # 分批处理
-        for batch_num in range(total_batches):
-            start_idx = batch_num * batch_size
-            end_idx = min((batch_num + 1) * batch_size, total_files)
-            batch_files = pdf_files[start_idx:end_idx]
+        with st.spinner(f"🔄 正在处理PDF文件，这可能需要几分钟..."):
+            from src.pdf_processor import PDFProcessor
             
-            # 更新进度显示
-            progress = processed_count / total_files
-            progress_bar.progress(progress)
-            progress_text.text(f"🔄 批次 {batch_num+1}/{total_batches}: 处理 {len(batch_files)} 个文件")
-            
-            # 处理当前批次
-            batch_documents = []
             pdf_processor = PDFProcessor()
+            documents = pdf_processor.load_pdfs_from_directory(pdf_dir)
             
-            for pdf_file in batch_files:
-                pdf_path = os.path.join(pdf_dir, pdf_file)
-                documents = pdf_processor.load_pdf(pdf_path)
-                if documents:
-                    batch_documents.extend(documents)
-                    processed_count += 1
+            if not documents:
+                st.error("❌ 没有找到可处理的PDF内容")
+                return None
             
-            # 添加到总文档列表
-            all_documents.extend(batch_documents)
-        
-        # 所有PDF加载完成
-        progress_bar.progress(0.8)
-        progress_text.text("🔄 正在分割文档...")
-        
-        if not all_documents:
-            st.error("❌ PDF加载失败，无有效文档")
-            return None
-        
-        # 分割文档
-        pdf_processor = PDFProcessor()
-        chunks = pdf_processor.split_documents(all_documents)
-        
-        if not chunks:
-            st.error("❌ 文档分割失败，无有效文本块")
-            return None
-        
-        # 创建向量库
-        progress_bar.progress(0.9)
-        progress_text.text("🔄 正在创建向量库...")
-        
-        vector_store = SmartVectorStore(persist_directory=chroma_db_path)
-        success = vector_store.create_vector_store(chunks, clear_old=True)
-        
-        if success:
-            st.session_state.vector_store = vector_store
-            st.session_state.vector_store_initialized = True
+            chunks = pdf_processor.split_documents(documents)
             
-            # 保存状态（只使用原有的status文件）
-            status_file = os.path.join(chroma_db_path, "generation_status.json")
-            status = {
-                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "count": len(chunks),
-                "initialized": True,
-                "total_files": total_files,
-                "total_chunks": len(chunks)
-            }
-            with open(status_file, 'w', encoding='utf-8') as f:
-                json.dump(status, f, ensure_ascii=False, indent=2)
+            vector_store = SmartVectorStore(persist_directory=chroma_db_path)
+            success = vector_store.create_vector_store(chunks, clear_old=True)
             
-            progress_bar.progress(1.0)
-            progress_text.text(f"✅ 完成！共处理 {total_files} 个PDF，生成 {len(chunks)} 个文本块")
-            
-            st.success(f"✅ 知识库生成完成！")
-            return vector_store
-        else:
-            st.error("❌ 知识库生成失败")
-            return None
+            if success:
+                st.session_state.vector_store = vector_store
+                st.session_state.vector_store_initialized = True
+                
+                status_file = os.path.join(chroma_db_path, "generation_status.json")
+                status = {
+                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "count": vector_store.vector_store._collection.count() if hasattr(vector_store, 'vector_store') else 0,
+                    "initialized": True  # ← 添加这一行！
+                }
+                with open(status_file, 'w', encoding='utf-8') as f:
+                    json.dump(status, f, ensure_ascii=False, indent=2)
+                
+                st.success(f"✅ 知识库生成完成！共处理 {len(chunks)} 个文本块")
+                return vector_store
+            else:
+                st.error("❌ 知识库生成失败")
+                return None
                 
     except Exception as e:
-        st.error(f"❌ 处理出错: {str(e)}")
-        # 只显示错误，不显示详细traceback避免信息泄露
+        st.error(f"❌ 生成失败: {str(e)}")
         return None
-
 
 def initialize_vector_store_once():
     """一次性初始化向量库，生成后永久保存"""
@@ -634,18 +561,6 @@ def add_image_upload_section():
 
 # ===================== 主函数 =====================
 def main():
-    try:
-        from src.image_processor import image_processor
-        # 检查OCR引擎是否可用
-        if not hasattr(image_processor, 'ocr_engine') or image_processor.ocr_engine is None:
-            st.warning("⚠️ OCR引擎未初始化，尝试重新初始化...")
-            # 重新执行依赖修复
-            if "deps_fixed" in st.session_state:
-                del st.session_state.deps_fixed
-            fix_dependencies()
-    except Exception as e:
-        st.error(f"❌ OCR模块加载失败: {str(e)[:200]}")
-    
     # 页面标题
     st.markdown("<h1 style='text-align: center; color: #1f77b4;'>🎓 冰姐问答小课堂</h1>", unsafe_allow_html=True)
     st.markdown("---")
@@ -733,7 +648,6 @@ def main():
                 st.success("✅ 知识库已就绪")
             else:
                 st.warning("⚠️ 知识库未初始化")
-    
         
         st.markdown("---")
         
@@ -744,6 +658,7 @@ def main():
             st.metric("累计Token", str(st.session_state.total_tokens_used))
         with col2:
             st.metric("累计费用", str(st.session_state.total_cost))
+                # 费用统计
         
         
         st.markdown("---")
@@ -960,12 +875,12 @@ def main():
         if not deepseek_api.is_logged_in():
             st.warning("🔑 请先设置API Key")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
-            st.session_state.messages.append({"role": "assistant", "content": "乖，请先登录或者输入API喔"})
+            st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏设置DeepSeek API Key"})
             st.rerun()
         elif not st.session_state.vector_store_initialized:
             st.warning("📚 请先初始化知识库")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
-            st.session_state.messages.append({"role": "assistant", "content": "乖，请先登录或者输入API喔"})
+            st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏初始化知识库"})
             st.rerun()
         else:
             st.session_state.messages.append({"role": "user", "content": current_prompt})
