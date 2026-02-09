@@ -7,6 +7,12 @@ import json
 import logging
 import time
 from typing import List, Dict, Any
+import warnings
+
+# 过滤Streamlit弃用警告
+warnings.filterwarnings("ignore", 
+                       message="Please replace `use_container_width` with `width`",
+                       category=FutureWarning)
 
 # ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
 def fix_dependencies():

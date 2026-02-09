@@ -1,5 +1,6 @@
 import os
 import logging
+import traceback  # 添加这个导入
 import numpy as np
 from typing import List, Dict, Any
 import fitz  # PyMuPDF，用于PDF转图片（需安装：pip install pymupdf）
@@ -7,6 +8,7 @@ from PIL import Image
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader
+
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -100,7 +102,10 @@ class PDFProcessor:
             logger.info(f"PDF加载完成：共{total_pages}页，其中{ocr_count}页由RapidOCR识别")
             return documents
         except Exception as e:
-            logger.error(f"加载PDF失败 {pdf_path}: {str(e)}", exc_info=True)
+            # 修改这里：不使用exc_info参数
+            logger.error(f"加载PDF失败 {pdf_path}: {str(e)}")
+            # 如果需要详细错误信息，使用traceback
+            logger.debug(f"详细错误信息: {traceback.format_exc()}")
             return []
 
     def load_pdfs_from_directory(self, pdf_dir: str) -> List[Document]:
