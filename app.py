@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+os.environ['STREAMLIT_DEPRECATION_WARNINGS'] = '0'
 import sys
 import subprocess
 import requests
@@ -40,80 +41,21 @@ print("🚫 所有警告已被禁用")
 
 # ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
 def fix_dependencies():
-    """自动修复Cloud环境依赖问题"""
     if 'STREAMLIT_SERVER_TYPE' not in os.environ:
-        print("🔧 本地环境：跳过强制依赖修复，保持现有配置")
         return
     
-    print("🌐 Cloud环境：执行无头OCR依赖修复")
-    
     try:
-        # ========== 关键：安装完整的系统依赖 ==========
-        print("📦 安装系统依赖...")
-        subprocess.run(
-            ["apt-get", "update", "-y"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        # 只安装OCR必需的系统库
+        subprocess.run(["apt-get", "update", "-y"], check=True)
+        subprocess.run(["apt-get", "install", "-y", "libgl1-mesa-glx"], check=True)
         
-        # 完整的OCR系统依赖
-        system_packages = [
-            "libgl1-mesa-glx",
-            "libglib2.0-0",
-            "libsm6",
-            "libxext6",
-            "libxrender-dev",
-            "libgl-dev",
-            "libgomp1",
-            "libglu1-mesa",
-            "libx11-6",
-            "libxcb1",
-            "libxau6"
-        ]
-        
-        subprocess.run(
-            ["apt-get", "install", "-y"] + system_packages,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
-        print("✅ 系统库安装完成")
-        
-        # ========== 安装Python依赖 ==========
-        print("🐍 安装Python依赖...")
-        
-        # 先卸载可能有冲突的包
-        subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False
-        )
-        
-        # 安装Cloud专用包
-        cloud_packages = [
-            "opencv-python-headless==4.8.1.78",
-            "rapidocr-onnxruntime==1.4.4",
-            "onnxruntime==1.16.3",
-            "pymupdf==1.26.7",
-            "pillow==12.1.0",
-            "numpy==1.26.4"
-        ]
-        
-        for package in cloud_packages:
-            print(f"  → 安装 {package}")
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", package],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
-        
-        print("✅ Cloud无头OCR依赖修复完成！")
-    except Exception as e:
-        print(f"⚠️ 依赖修复警告：{str(e)}")
-
+        # 只安装必需的Python包
+        packages = ["opencv-python-headless", "rapidocr-onnxruntime", "pymupdf"]
+        for package in packages:
+            subprocess.run([sys.executable, "-m", "pip", "install", package], check=True)
+            
+    except Exception:
+        pass  # 静默失败
 # 执行依赖修复（仅首次运行）
 if "deps_fixed" not in st.session_state:
     fix_dependencies()
@@ -163,23 +105,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-st.markdown("""
-    <style>
-    /* 移除所有可能冲突的样式 */
-    /* Streamlit 1.54.0 对样式更敏感 */
-    
-    /* 只保留最安全的样式 */
-    .stApp {
-        max-width: 1200px;
-        margin: 0 auto;
-    }
-    
-    /* 按钮基础样式，避免width冲突 */
-    button[kind="primary"] {
-        font-weight: bold;
-    }
-    </style>
-""", unsafe_allow_html=True)
 
 
 
