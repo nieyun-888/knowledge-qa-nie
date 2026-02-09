@@ -13,7 +13,10 @@ def fix_dependencies():
     """自动修复Cloud环境依赖问题"""
     # 1. 仅在Streamlit Cloud环境执行
     if 'STREAMLIT_SERVER_TYPE' not in os.environ:
+        print("🔧 本地环境：跳过强制依赖修复，保持现有配置")
         return
+    
+    print("🌐 Cloud环境：执行无头OCR依赖修复")
     
     # 2. 安装系统库（解决libGL缺失）
     try:
@@ -34,32 +37,57 @@ def fix_dependencies():
     
     # 3. 强制安装兼容版本的Python依赖
     try:
+        # 先卸载可能有问题的GUI版本（静默执行，不检查结果）
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "huggingface-hub==0.19.4", "--force-reinstall"],
+            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-contrib-python"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True
+            check=False  # 不强制检查，可能不存在
         )
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "transformers==4.36.2", "--force-reinstall"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "opencv-python-headless>=4.8.0.76", "--force-reinstall"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
-        print("✅ 依赖修复完成！")
+        
+        # Cloud专用无头OCR依赖包
+        cloud_packages = [
+            "opencv-python-headless==4.8.1.78",
+            "rapidocr-onnxruntime==1.3.7",
+            "onnxruntime==1.16.3",
+            "pymupdf==1.23.8",
+            "pillow==10.1.0",
+            "huggingface-hub==0.19.4",
+            "transformers==4.36.2"
+        ]
+        
+        for package in cloud_packages:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", package, "--force-reinstall"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+        
+        print("✅ Cloud无头OCR依赖修复完成！")
     except Exception as e:
-        print(f"❌ 依赖修复失败：{str(e)}")
+        print(f"⚠️ 依赖修复警告：{str(e)}")
 
 # 执行依赖修复（仅首次运行）
 if "deps_fixed" not in st.session_state:
     fix_dependencies()
     st.session_state.deps_fixed = True
+
+# ===================== 环境检测与配置 =====================
+def configure_for_environment():
+    """根据运行环境配置无头模式"""
+    # 只在Cloud环境设置无头变量
+    if 'STREAMLIT_SERVER_TYPE' in os.environ:
+        print("🌐 检测到Cloud环境，配置无头模式")
+        os.environ['DISPLAY'] = ':99'  # 虚拟显示
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+        os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    else:
+        print("💻 本地环境：保持现有GUI配置")
+
+# 执行环境配置
+configure_for_environment()
 
 # ===================== 导入自定义模块 =====================
 try:
@@ -604,6 +632,66 @@ def main():
         st.markdown("---")
         st.warning("**当前模式：仅检索模式**")
 
+        st.markdown("---")
+        st.markdown("### 🔧 管理功能")
+
+        # 简单密码保护（就你一个人用，足够了）
+        if st.text_input("管理密码", type="password", key="admin_pwd") == "nieyun123":
+            st.success("✅ 管理员登录成功")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🔄 标记重新生成", help="标记知识库需要重新生成"):
+                    st.session_state.vector_store_initialized = False
+                    st.session_state.vector_store = None
+                    st.success("✅ 已标记！请点击上方的'生成知识库'")
+            
+            with col2:
+                if st.button("🗑️ 删除数据", type="secondary", help="删除向量库数据"):
+                    import shutil
+                    db_path = get_chroma_db_path()
+                    if os.path.exists(db_path):
+                        shutil.rmtree(db_path)
+                        st.session_state.vector_store_initialized = False
+                        st.session_state.vector_store = None
+                        st.success("✅ 数据已删除！")
+                        st.info("请重新上传PDF并生成知识库")
+                    else:
+                        st.info("📭 数据不存在")
+            
+            # 显示当前状态
+            st.caption(f"向量库状态: {'已加载' if st.session_state.vector_store_initialized else '未加载'}")
+            st.caption(f"数据路径: {get_chroma_db_path()}")
+            
+        else:
+            st.caption("如需管理功能请联系管理员")
+
+
+
+        # ====== 新增：OCR状态显示（调试用） ======
+        st.markdown("---")
+        st.markdown("### 🔧 系统状态")
+        
+        # 检查OCR引擎状态
+        try:
+            from src.pdf_processor import OCR_ENGINE
+            if OCR_ENGINE is None:
+                st.warning("⚠️ OCR引擎：未初始化")
+            else:
+                st.success("✅ OCR引擎：就绪")
+                
+                # 检查OpenCV版本
+                try:
+                    import cv2
+                    version = cv2.__version__
+                    is_headless = "headless" in cv2.getBuildInformation().lower()
+                    st.caption(f"OpenCV: {version} {'(无头)' if is_headless else '(有头)'}")
+                except:
+                    st.caption("OpenCV: 无法检测")
+        except Exception as e:
+            st.warning(f"⚠️ OCR状态检测失败：{str(e)[:50]}")
+        # ====== 新增结束 ======
     # 主界面布局
     col1, col2 = st.columns([2, 1])
     
