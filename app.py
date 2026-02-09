@@ -379,143 +379,111 @@ class DeepSeekAPI:
 
 # ===================== 向量库初始化 =====================
 def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path):
-    """智能分批处理PDF文件"""
-    import os
-    from src.pdf_processor import PDFProcessor
-    from src.vector_store import SmartVectorStore
-    
-    pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
-    total_files = len(pdf_files)
-    
-    if total_files == 0:
-        st.error("❌ 没有找到PDF文件")
-        return None
-    
-    # 自动计算批次大小（根据文件数量）
-    if total_files <= 10:
-        batch_size = 3
-    elif total_files <= 30:
-        batch_size = 5
-    elif total_files <= 50:
-        batch_size = 8
-    else:
-        batch_size = 10  # 96个文件，分10批，每批约10个
-    
-    total_batches = (total_files + batch_size - 1) // batch_size
-    
-    st.info(f"📚 发现 {total_files} 个PDF文件，将分 {total_batches} 批处理（每批 {batch_size} 个）")
-    
-    # 进度跟踪文件
-    progress_file = os.path.join(chroma_db_path, "processing_progress.json")
-    
-    # 检查是否有未完成的进度
-    if os.path.exists(progress_file):
-        with open(progress_file, 'r', encoding='utf-8') as f:
-            progress = json.load(f)
-        
-        if progress.get("completed", False):
-            st.warning("⚠️ 检测到已完成的进度，将重新开始")
-            os.remove(progress_file)
-            processed_files = []
-            all_chunks = []
-        else:
-            processed_files = progress.get("processed_files", [])
-            all_chunks = []
-            st.info(f"🔁 恢复进度：已处理 {len(processed_files)}/{total_files} 个文件")
-    else:
-        processed_files = []
-        all_chunks = []
-    
-    # 初始化向量库
-    vector_store = SmartVectorStore(persist_directory=chroma_db_path)
-    pdf_processor = PDFProcessor()
-    
-    # 进度显示
-    progress_bar = st.progress(0, text="准备开始处理...")
-    status_text = st.empty()
-    
+    """从PDF生成向量库（安全分批版）"""
     try:
+        import os
+        from src.pdf_processor import PDFProcessor
+        from src.vector_store import SmartVectorStore
+        
+        # 获取所有PDF文件
+        pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
+        total_files = len(pdf_files)
+        
+        if total_files == 0:
+            st.error("❌ 没有找到可处理的PDF内容")
+            return None
+        
+        # 显示开始信息
+        st.info(f"📚 发现 {total_files} 个PDF文件，开始分批处理...")
+        
+        # 设置批次大小（96个文件，每批8个，分12批）
+        batch_size = 8
+        total_batches = (total_files + batch_size - 1) // batch_size
+        
+        # 创建进度显示
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        all_documents = []
+        processed_count = 0
+        
         # 分批处理
         for batch_num in range(total_batches):
             start_idx = batch_num * batch_size
             end_idx = min((batch_num + 1) * batch_size, total_files)
             batch_files = pdf_files[start_idx:end_idx]
             
-            # 跳过已处理的文件
-            batch_files = [f for f in batch_files if f not in processed_files]
-            if not batch_files:
-                continue
-            
-            # 更新状态
-            current_progress = (start_idx + len(processed_files)) / total_files
-            progress_bar.progress(current_progress, 
-                                 text=f"批次 {batch_num+1}/{total_batches}: 处理 {len(batch_files)} 个文件")
-            status_text.text(f"🔄 正在处理: {', '.join(batch_files[:3])}{'...' if len(batch_files)>3 else ''}")
+            # 更新进度显示
+            progress = processed_count / total_files
+            progress_bar.progress(progress)
+            progress_text.text(f"🔄 批次 {batch_num+1}/{total_batches}: 处理 {len(batch_files)} 个文件")
             
             # 处理当前批次
             batch_documents = []
+            pdf_processor = PDFProcessor()
+            
             for pdf_file in batch_files:
                 pdf_path = os.path.join(pdf_dir, pdf_file)
                 documents = pdf_processor.load_pdf(pdf_path)
-                batch_documents.extend(documents)
-                processed_files.append(pdf_file)
-                
-                # 实时保存进度（每处理一个文件保存一次）
-                progress_data = {
-                    "total_files": total_files,
-                    "processed_files": processed_files,
-                    "current_batch": batch_num + 1,
-                    "total_batches": total_batches,
-                    "completed": False,
-                    "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                with open(progress_file, 'w', encoding='utf-8') as f:
-                    json.dump(progress_data, f, ensure_ascii=False, indent=2)
+                if documents:
+                    batch_documents.extend(documents)
+                    processed_count += 1
             
-            # 分割文档
-            if batch_documents:
-                chunks = pdf_processor.split_documents(batch_documents)
-                all_chunks.extend(chunks)
+            # 添加到总文档列表
+            all_documents.extend(batch_documents)
         
-        # 所有批次处理完成，创建向量库
-        progress_bar.progress(0.9, text="正在创建向量库...")
-        status_text.text("🔄 正在生成向量索引...")
+        # 所有PDF加载完成
+        progress_bar.progress(0.8)
+        progress_text.text("🔄 正在分割文档...")
         
-        if all_chunks:
-            success = vector_store.create_vector_store(all_chunks, clear_old=True)
-            if success:
-                st.session_state.vector_store = vector_store
-                st.session_state.vector_store_initialized = True
+        if not all_documents:
+            st.error("❌ PDF加载失败，无有效文档")
+            return None
+        
+        # 分割文档
+        pdf_processor = PDFProcessor()
+        chunks = pdf_processor.split_documents(all_documents)
+        
+        if not chunks:
+            st.error("❌ 文档分割失败，无有效文本块")
+            return None
+        
+        # 创建向量库
+        progress_bar.progress(0.9)
+        progress_text.text("🔄 正在创建向量库...")
+        
+        vector_store = SmartVectorStore(persist_directory=chroma_db_path)
+        success = vector_store.create_vector_store(chunks, clear_old=True)
+        
+        if success:
+            st.session_state.vector_store = vector_store
+            st.session_state.vector_store_initialized = True
+            
+            # 保存状态（只使用原有的status文件）
+            status_file = os.path.join(chroma_db_path, "generation_status.json")
+            status = {
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "count": len(chunks),
+                "initialized": True,
+                "total_files": total_files,
+                "total_chunks": len(chunks)
+            }
+            with open(status_file, 'w', encoding='utf-8') as f:
+                json.dump(status, f, ensure_ascii=False, indent=2)
+            
+            progress_bar.progress(1.0)
+            progress_text.text(f"✅ 完成！共处理 {total_files} 个PDF，生成 {len(chunks)} 个文本块")
+            
+            st.success(f"✅ 知识库生成完成！")
+            return vector_store
+        else:
+            st.error("❌ 知识库生成失败")
+            return None
                 
-                # 保存最终状态
-                status_file = os.path.join(chroma_db_path, "generation_status.json")
-                status = {
-                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "count": len(all_chunks),
-                    "initialized": True,
-                    "total_files": total_files,
-                    "total_chunks": len(all_chunks)
-                }
-                with open(status_file, 'w', encoding='utf-8') as f:
-                    json.dump(status, f, ensure_ascii=False, indent=2)
-                
-                # 删除进度文件
-                if os.path.exists(progress_file):
-                    os.remove(progress_file)
-                
-                progress_bar.progress(1.0, text="✅ 处理完成！")
-                status_text.text(f"🎉 成功处理 {total_files} 个PDF文件，生成 {len(all_chunks)} 个文本块")
-                
-                return vector_store
-    
     except Exception as e:
         st.error(f"❌ 处理出错: {str(e)}")
-        if os.path.exists(progress_file):
-            st.info("💾 进度已保存，下次可继续处理")
+        # 只显示错误，不显示详细traceback避免信息泄露
         return None
-    
-    return None
-
 
 
 def initialize_vector_store_once():
@@ -747,31 +715,7 @@ def main():
                 st.success("✅ 知识库已就绪")
             else:
                 st.warning("⚠️ 知识库未初始化")
-                # 添加批量处理控制
-                st.markdown("---")
-                st.markdown("### 🔄 批量处理控制")
-                
-                # 检查是否有未完成的进度
-                progress_file = os.path.join(chroma_db_path, "processing_progress.json")
-                if os.path.exists(progress_file):
-                    with open(progress_file, 'r', encoding='utf-8') as f:
-                        progress = json.load(f)
-                    
-                    if not progress.get("completed", False):
-                        st.warning("⚠️ 检测到未完成的处理进度")
-                        col_resume1, col_resume2 = st.columns(2)
-                        with col_resume1:
-                            if st.button("继续处理", key="resume_processing"):
-                                vector_store = generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
-                                if vector_store:
-                                    st.success("✅ 知识库生成完成")
-                                    st.rerun()
-                        with col_resume2:
-                            if st.button("重新开始", key="restart_processing"):
-                                os.remove(progress_file)
-                                st.success("✅ 已清除进度")
-                                st.rerun()
-
+    
         
         st.markdown("---")
         
