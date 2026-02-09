@@ -177,13 +177,12 @@ class DeepSeekAPI:
         self.base_url = "https://api.deepseek.com/v1/chat/completions"
         self.model_name = "deepseek-chat"
         
+        # 修复：不要自动从secrets获取API Key
         if 'api_key' not in st.session_state:
-            try:
-                st.session_state.api_key = st.secrets.get("DEEPSEEK_API_KEY", None)
-            except Exception:
-                st.session_state.api_key = None
+            st.session_state.api_key = None
+            
         if 'api_key_set' not in st.session_state:
-            st.session_state.api_key_set = st.session_state.api_key is not None
+            st.session_state.api_key_set = False
     
     @property
     def api_key(self):
@@ -199,12 +198,15 @@ class DeepSeekAPI:
     def login_with_password(self, password: str) -> bool:
         if password == "123456":
             st.session_state.api_key = "sk-4f3e29df9fa54da8bd601ae780111df1"
-            st.session_state.api_key_set = True
+            st.session_state.api_key_set = True  # 标记为已通过登录设置
             return True
         return False
 
     def is_logged_in(self) -> bool:
-        return st.session_state.api_key is not None and st.session_state.api_key.strip() != ""
+        # 严格检查：必须有API Key且是通过登录设置的
+        return (st.session_state.api_key is not None 
+                and st.session_state.api_key.strip() != ""
+                and st.session_state.api_key_set)  # 必须是通过登录设置的
 
     def test_api_connection(self) -> Dict:
         if not self.is_logged_in():
@@ -236,7 +238,7 @@ class DeepSeekAPI:
 
     def get_answer(self, question: str, contexts: List[Dict], conversation_history: List[dict] = None) -> str:
         if not self.is_logged_in():
-            return "请先在侧边栏设置 DeepSeek API Key"
+            return "乖，请先登录或者输入API喔"
 
         context_text = self._build_context_text(contexts)
         
@@ -606,7 +608,10 @@ def main():
                 if st.button("登录", key="login"):
                     if deepseek_api.login_with_password(password):
                         st.success("✅ 登录成功")
+                        time.sleep(0.6)  # 让用户看到消息
                         st.rerun()
+                    else:
+                        st.error("❌ 密码错误")
         
         st.markdown("---")
         
@@ -650,9 +655,10 @@ def main():
         st.markdown("### 💰 费用统计")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("累计Token", f"{st.session_state.total_tokens_used:,}")
+            st.metric("累计Token", str(st.session_state.total_tokens_used))
         with col2:
-            st.metric("累计费用", f"¥{st.session_state.total_cost:.4f}")
+            st.metric("累计费用", str(st.session_state.total_cost))
+        
         
         st.markdown("---")
         st.warning("**当前模式：仅检索模式**")
@@ -868,12 +874,12 @@ def main():
         if not deepseek_api.is_logged_in():
             st.warning("🔑 请先设置API Key")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
-            st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏设置DeepSeek API Key"})
+            st.session_state.messages.append({"role": "assistant", "content": "乖，请先登录或者输入API喔"})
             st.rerun()
         elif not st.session_state.vector_store_initialized:
             st.warning("📚 请先初始化知识库")
             st.session_state.messages.append({"role": "user", "content": current_prompt})
-            st.session_state.messages.append({"role": "assistant", "content": "请先在侧边栏初始化知识库"})
+            st.session_state.messages.append({"role": "assistant", "content": "乖，请先登录或者输入API喔"})
             st.rerun()
         else:
             st.session_state.messages.append({"role": "user", "content": current_prompt})
