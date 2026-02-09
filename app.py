@@ -401,7 +401,8 @@ def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path):
                 status_file = os.path.join(chroma_db_path, "generation_status.json")
                 status = {
                     "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "count": vector_store.vector_store._collection.count() if hasattr(vector_store, 'vector_store') else 0
+                    "count": vector_store.vector_store._collection.count() if hasattr(vector_store, 'vector_store') else 0,
+                    "initialized": True  # ← 添加这一行！
                 }
                 with open(status_file, 'w', encoding='utf-8') as f:
                     json.dump(status, f, ensure_ascii=False, indent=2)
@@ -418,13 +419,37 @@ def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path):
 
 def initialize_vector_store_once():
     """一次性初始化向量库，生成后永久保存"""
+    # 如果session state已有，直接返回
     if st.session_state.vector_store_initialized:
         return st.session_state.vector_store
     
     chroma_db_path = get_chroma_db_path()
+    
+    # ========== 新增：从文件恢复状态 ==========
+    status_file = os.path.join(chroma_db_path, "generation_status.json")
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r', encoding='utf-8') as f:
+                status = json.load(f)
+            
+            # 如果文件标记为已初始化，但session state没有
+            if status.get("initialized", False):
+                try:
+                    vector_store = SmartVectorStore(persist_directory=chroma_db_path)
+                    if vector_store.load_existing_vector_store():
+                        st.session_state.vector_store = vector_store
+                        st.session_state.vector_store_initialized = True
+                        st.sidebar.success("✅ 从文件恢复知识库状态成功")
+                        return vector_store
+                except:
+                    pass  # 如果加载失败，继续下面的逻辑
+        except:
+            pass
+    # ========== 新增结束 ==========
+    
     pdf_data_path = get_pdf_data_path()
     
-    # 检查向量库是否已存在
+    # 检查向量库是否已存在（原有逻辑）
     if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
         try:
             vector_store = SmartVectorStore(persist_directory=chroma_db_path)
@@ -449,7 +474,7 @@ def initialize_vector_store_once():
     # 显示生成选项
     with st.sidebar:
         st.markdown("### 🏗️ 知识库生成")
-        if st.button("🚀 生成知识库", type="primary", key="generate_kb"):
+        if st.button("🚀 生成知识库", type="primary", key="generate_kb_main"):
             return generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
     
     return None
@@ -606,7 +631,7 @@ def main():
             
             # 如果已初始化，不再显示按钮
             if not st.session_state.vector_store_initialized:
-                if st.button("🔗 连接知识库", key="connect_kb"):
+                if st.button("🔗 连接知识库", key="connect_kb_sidebar"):
                     vector_store = initialize_vector_store_once()
                     if vector_store:
                         st.success("✅ 知识库连接成功")
@@ -677,7 +702,7 @@ def main():
             
             elif mode == "🔄 智能重新生成":
                 st.warning("此操作将：\n1. 检查PDF文件是否有更新\n2. 只处理新的或修改过的PDF\n3. 保持现有向量库数据")
-                if st.button("开始智能重新生成", type="primary"):
+                if st.button("开始智能重新生成", type="primary", key="smart_regen_btn"):
                     # 这里需要实现智能检测逻辑
                     # 暂时先标记为需要重新生成
                     st.session_state.vector_store_initialized = False
@@ -689,7 +714,7 @@ def main():
                 st.error("⚠️ **危险操作**：这将删除所有向量库数据！")
                 confirm = st.text_input("请输入'DELETE ALL'确认操作：", key="delete_confirm")
                 if confirm == "DELETE ALL":
-                    if st.button("🔥 确认永久删除所有数据", type="secondary"):
+                    if st.button("🔥 确认永久删除所有数据", type="secondary", key="confirm_delete_btn"):
                         import shutil
                         db_path = get_chroma_db_path()
                         if os.path.exists(db_path):
@@ -708,7 +733,7 @@ def main():
                     st.success("✅ 向量库已加载，可以直接使用")
                 else:
                     st.warning("⚠️ 向量库未加载")
-                    if st.button("尝试加载现有向量库"):
+                    if st.button("尝试加载现有向量库", key="try_load_btn"):
                         vector_store = initialize_vector_store_once()
                         if vector_store:
                             st.success("✅ 向量库加载成功")
@@ -720,7 +745,7 @@ def main():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("第1步：删除数据", type="secondary"):
+                    if st.button("第1步：删除数据", type="secondary", key="step1_delete_btn):
                         import shutil
                         db_path = get_chroma_db_path()
                         if os.path.exists(db_path):
@@ -733,7 +758,7 @@ def main():
                             st.info("📭 数据目录不存在")
                 
                 with col2:
-                    if st.button("第2步：重新生成", type="primary", disabled=st.session_state.vector_store_initialized):
+                    if st.button("第2步：重新生成", type="primary", disabled=st.session_state.vector_store_initialized, key="step2_regen_btn"):
                         st.success("✅ 第2步：请在上方点击'生成知识库'按钮重新处理PDF")
 
         else:
