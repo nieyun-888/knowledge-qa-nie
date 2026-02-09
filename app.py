@@ -125,10 +125,21 @@ def get_chroma_db_path():
         return "/home/appuser/chroma_db"
     return "./chroma_db"
 
+
 def get_pdf_data_path():
     """获取PDF数据路径"""
     if is_streamlit_cloud():
-        return "/home/appuser/data/raw_pdfs"
+        # 检查是否有用户上传的PDF
+        cloud_path = "/home/appuser/data/raw_pdfs"
+        if os.path.exists(cloud_path) and any(f.endswith('.pdf') for f in os.listdir(cloud_path)):
+            return cloud_path
+        
+        # 如果没有用户上传的，检查是否预置了PDF
+        local_prebuilt = "./data/raw_pdfs"
+        if os.path.exists(local_prebuilt) and any(f.endswith('.pdf') for f in os.listdir(local_prebuilt)):
+            return local_prebuilt
+            
+        return cloud_path  # 返回Cloud路径，即使为空
     return "./data/raw_pdfs"
 
 # ===================== DeepSeek API 类 =====================
@@ -495,8 +506,15 @@ def add_image_upload_section():
 
 # ===================== 主函数 =====================
 def main():
+    # 页面标题
     st.markdown("<h1 style='text-align: center; color: #1f77b4;'>🎓 冰姐问答小课堂</h1>", unsafe_allow_html=True)
     st.markdown("---")
+    
+    # 检查Cloud环境PDF文件
+    if is_streamlit_cloud():
+        pdf_path = get_pdf_data_path()
+        if not os.path.exists(pdf_path) or not any(f.endswith('.pdf') for f in os.listdir(pdf_path)):
+            st.warning("📄 **首次使用提示**：请在侧边栏上传PDF文件")
     
     # 初始化API
     if 'deepseek_api' not in st.session_state:
