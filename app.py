@@ -8,120 +8,64 @@ import logging
 import time
 from typing import List, Dict, Any
 
-# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================# ===================== 核心修复：自动安装系统依赖和Python依赖 =====================
-def fix_dependencies():
-    """自动修复Cloud环境依赖问题"""
-    # 【修改】更准确的Cloud环境检测
-    # Streamlit Cloud 通常会设置这些环境变量之一
-    cloud_indicators = [
-        'STREAMLIT_SERVER_TYPE',
-        'STREAMLIT_SERVER_BASEURL_PATH', 
-        'STREAMLIT_SERVER_PORT',
-        'STREAMLIT_SERVER_ADDRESS'
-    ]
+# ===================== 精简版环境设置 =====================
+def setup_headless_environment():
+    """设置无头环境变量（必须在导入任何OCR相关模块之前设置）"""
+    # 检查是否是Cloud环境
+    is_cloud = 'STREAMLIT_SERVER_TYPE' in os.environ
     
-    is_cloud = any(key in os.environ for key in cloud_indicators)
-    
-    if not is_cloud:
-        print("🔧 本地环境：跳过强制依赖修复，保持现有配置")
-        return
-    
-    print("🌐 Cloud环境：执行无头OCR依赖修复")
-    
-    # 【修改】安装系统库时添加更多权限和重试
-    try:
-        print("📦 安装系统库: libgl1-mesa-glx libgomp1 libglib2.0-0")
-        
-        # 先更新apt
-        subprocess.run(
-            ["apt-get", "update", "-y"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
-        
-        # 安装必要的图形库
-        result = subprocess.run(
-            ["apt-get", "install", "-y", "libgl1-mesa-glx", "libgomp1", "libglib2.0-0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            print("✅ 系统库安装成功")
-        else:
-            print(f"⚠️ 系统库安装可能有问题: {result.stderr[:200]}")
-            
-    except Exception as e:
-        print(f"⚠️ 系统库安装异常: {str(e)}")
-    
-    # 【修改】简化Python依赖安装，只安装关键包
-    try:
-        print("📦 安装关键Python依赖...")
-        
-        # 确保安装无头版本的OpenCV
-        ocv_result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "opencv-python-headless==4.8.1.78"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        if ocv_result.returncode == 0:
-            print("✅ opencv-python-headless 安装成功")
-        else:
-            print(f"⚠️ opencv-python-headless 安装问题: {ocv_result.stderr[:200]}")
-        
-        # 测试RapidOCR导入
-        print("🔍 测试RapidOCR导入...")
-        try:
-            import rapidocr_onnxruntime
-            print(f"✅ RapidOCR 版本: {rapidocr_onnxruntime.__version__ if hasattr(rapidocr_onnxruntime, '__version__') else '已安装'}")
-        except ImportError as e:
-            print(f"❌ RapidOCR导入失败，尝试安装: {e}")
-            # 尝试安装
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "rapidocr-onnxruntime"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-        
-    except Exception as e:
-        print(f"⚠️ Python依赖安装异常: {str(e)}")
-
-# 执行依赖修复（仅首次运行）
-if "deps_fixed" not in st.session_state:
-    print("🔧 开始执行依赖修复检查...")
-    fix_dependencies()
-    st.session_state.deps_fixed = True
-else:
-    print("🔧 依赖修复已执行过，跳过")
-
-# ===================== 环境检测与配置 =====================
-def configure_for_environment():
-    """根据运行环境配置无头模式"""
-    # 只在Cloud环境设置无头变量
-    if 'STREAMLIT_SERVER_TYPE' in os.environ:
-        print("🌐 检测到Cloud环境，配置无头模式")
-        os.environ['DISPLAY'] = ':99'  # 虚拟显示
+    if is_cloud:
+        print("🌐 Cloud环境：设置无头环境变量")
+        # 设置无头环境变量
+        os.environ['DISPLAY'] = ':99'
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 减少TensorFlow日志
     else:
-        print("💻 本地环境：保持现有GUI配置")
+        print("💻 本地环境：保持原有配置")
 
-# 执行环境配置
-configure_for_environment()
+# 立即执行环境设置（在所有导入之前）
+setup_headless_environment()
 
 # ===================== 导入自定义模块 =====================
+print("📂 导入自定义模块...")
+
+# 先导入不依赖OCR的模块
 try:
     from src.vector_store import SmartVectorStore
-    from src.image_processor import image_processor
 except ImportError:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from src.vector_store import SmartVectorStore
+
+# 延迟导入OCR相关模块（确保环境已配置）
+try:
+    # 先测试OCR基础依赖
+    import cv2
+    print(f"✅ OpenCV版本: {cv2.__version__}")
+    
+    from PIL import Image
+    print("✅ PIL/Pillow已导入")
+    
+    # 再导入image_processor
     from src.image_processor import image_processor
+    print("✅ image_processor已导入")
+    
+except ImportError as e:
+    print(f"❌ OCR相关模块导入失败: {e}")
+    # 创建临时的image_processor占位符
+    class DummyImageProcessor:
+        def display_image_preview(self, *args, **kwargs):
+            st.warning("⚠️ OCR功能暂不可用")
+        
+        def process_uploaded_image(self, uploaded_file):
+            return {
+                "success": False,
+                "message": "OCR引擎初始化失败，请检查依赖",
+                "text": ""
+            }
+    
+    image_processor = DummyImageProcessor()
+
 from math import floor
 
 # ===================== 全局配置 =====================
@@ -165,6 +109,8 @@ if "last_uploaded_file" not in st.session_state:
     st.session_state.last_uploaded_file = None
 if "ocr_result" not in st.session_state:
     st.session_state.ocr_result = None
+if "headless_configured" not in st.session_state:
+    st.session_state.headless_configured = True  # 标记环境已配置
 
 # ===================== Cloud环境工具函数 =====================
 def is_streamlit_cloud():
@@ -687,6 +633,30 @@ def main():
         
         st.markdown("---")
         st.warning("**当前模式：仅检索模式**")
+        # ====== OCR状态检查 ======
+        st.markdown("---")
+        st.markdown("### 🔍 OCR状态检查")
+
+        if st.button("🔧 检查OCR引擎状态", key="check_ocr_status"):
+            with st.spinner("检查OCR状态..."):
+                try:
+                    # 延迟导入避免循环依赖
+                    from src.pdf_processor import PDFProcessor
+                    
+                    processor = PDFProcessor()
+                    status = processor.check_ocr_status()
+                    
+                    if status.get("available"):
+                        st.success("✅ OCR引擎可用")
+                    else:
+                        st.error("❌ OCR引擎不可用")
+                        
+                    # 显示详细信息
+                    with st.expander("查看详细信息"):
+                        st.json(status)
+                        
+                except Exception as e:
+                    st.error(f"检查失败: {str(e)[:100]}")
 
         st.markdown("---")
         st.markdown("### 🛠️ 系统管理模式")
