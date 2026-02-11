@@ -561,7 +561,7 @@ def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path, batch_size=10):
         
         try:
             # 加载整个PDF文件的所有页
-            documents = pdf_processor.load_pdf(file_path)  # 假设load_pdf返回该文件所有页的文档对象
+            documents = pdf_processor.load_single_pdf(file_path) # 假设load_pdf返回该文件所有页的文档对象
             if not documents:
                 st.warning(f"⚠️ {file_name} 无有效内容，标记为已处理")
                 save_processed_file(file_name)
@@ -625,7 +625,7 @@ def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path, batch_size=10):
 def load_existing_vector_store(chroma_dir):
     """加载已生成的向量库（避免重复生成）"""
     try:
-        from langchain.embeddings import HuggingFaceEmbeddings
+        from langchain_community.embeddings import HuggingFaceEmbeddings
         from langchain.vectorstores import Chroma
         embeddings = HuggingFaceEmbeddings(
             model_name="all-MiniLM-L6-v2",
