@@ -10,114 +10,51 @@ import socket
 import logging
 from typing import List, Dict, Any
 
+# ===================== 超级紧急：第一时间设置环境并安装libGL =====================
+def emergency_setup():
+    """在导入任何其他模块前紧急安装libGL"""
+    print("🚨 紧急环境设置开始...")
+    
+    # 先设置环境变量
+    os.environ['DISPLAY'] = ':99'
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+    
+    # 立即尝试安装libGL
+    try:
+        print("📦 紧急安装libGL...")
+        subprocess.run(
+            ["apt-get", "update", "-y"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False
+        )
+        subprocess.run(
+            ["apt-get", "install", "-y", "libgl1-mesa-glx"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False
+        )
+        print("✅ libGL安装完成")
+    except Exception as e:
+        print(f"⚠️ libGL安装失败: {e}")
 
-# ===================== 精简版环境设置 =====================
-def setup_headless_environment():
-    """设置无头环境变量并安装系统依赖（带详细调试信息）"""
-    import platform
-    import socket
-    # 打印系统信息
-    print("="*50)
-    print("🔍 系统环境调试信息")
-    print("="*50)
-    print(f"🐍 Python版本: {sys.version}")
-    print(f"💻 操作系统: {platform.platform()}")
-    print(f"📁 当前工作目录: {os.getcwd()}")
-    print(f"🏠 HOME目录: {os.environ.get('HOME', '未设置')}")
-    print(f"🖥️ 主机名: {socket.gethostname()}")
-    
-    # 检查是否是Cloud环境 - 增强检测
-    cloud_indicators = [
-        'STREAMLIT_SERVER_TYPE',
-        'STREAMLIT_SHARING',
-        'STREAMLIT_CLOUD',
-        'STREAMLIT_ENV',
-        'IS_STREAMLIT_CLOUD',
-        'HOSTNAME',  # Streamlit Cloud的主机名通常包含streamlit
-        'HOME'  # Streamlit Cloud的HOME是/home/appuser
-    ]
-    
-    is_cloud = any(key in os.environ for key in cloud_indicators)
-    
-    # 额外检测：如果是Streamlit Cloud，HOME通常是/home/appuser
-    if not is_cloud and os.environ.get('HOME') == '/home/appuser':
-        is_cloud = True
-        print("🔍 通过HOME路径检测到Cloud环境")
-    
-    # 额外检测：检查主机名
-    if not is_cloud:
-        try:
-            hostname = socket.gethostname()
-            if 'streamlit' in hostname.lower() or 'cloud' in hostname.lower():
-                is_cloud = True
-                print(f"🔍 通过主机名检测到Cloud环境: {hostname}")
-        except:
-            pass
-    # 额外检测3: 当前工作目录
-    if not is_cloud:
-        cwd = os.getcwd()
-        if '/mount/src' in cwd:
-            is_cloud = True
-            print(f"🔍 通过工作目录检测到Cloud环境: {cwd}")
-    print(f"🌐 Cloud环境: {'是' if is_cloud else '否'}")
-    
-    if is_cloud:
-        print("📦 开始安装系统依赖...")
-        start_time = time.time()
-        
-        # 安装libGL系统依赖
-        try:
-            print("  - 更新apt包列表...")
-            update_result = subprocess.run(
-                ["apt-get", "update", "-y"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False
-            )
-            if update_result.returncode == 0:
-                print("    ✅ apt更新成功")
-            else:
-                print(f"    ⚠️ apt更新失败: {update_result.stderr[:200]}")
-        except Exception as e:
-            print(f"    ❌ apt更新异常: {e}")
-        
-        try:
-            print("  - 安装libgl1-mesa-glx...")
-            install_result = subprocess.run(
-                ["apt-get", "install", "-y", "libgl1-mesa-glx"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False
-            )
-            if install_result.returncode == 0:
-                print("    ✅ libgl1-mesa-glx安装成功")
-            else:
-                print(f"    ⚠️ libgl1-mesa-glx安装失败: {install_result.stderr[:200]}")
-        except Exception as e:
-            print(f"    ❌ libgl1-mesa-glx安装异常: {e}")
-        
-        # 设置无头环境变量
-        print("🔄 设置无头环境变量...")
-        os.environ['DISPLAY'] = ':99'
-        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-        os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-        os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '0'
-        print("    ✅ 环境变量设置完成")
-        print(f"    - DISPLAY={os.environ.get('DISPLAY')}")
-        print(f"    - QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM')}")
-        
-        elapsed_time = time.time() - start_time
-        print(f"⏱️ 系统依赖安装耗时: {elapsed_time:.2f}秒")
-    else:
-        print("💻 本地环境：跳过系统依赖安装")
-    
-    print("="*50)
+# ===== 立即执行！在导入任何OCR相关模块之前 =====
+if 'STREAMLIT_SERVER_TYPE' in os.environ or os.environ.get('HOME') == '/home/appuser':
+    emergency_setup()
+# ==============================================
 
-# 立即执行环境设置（在所有导入之前）
-setup_headless_environment()
+# ===================== 然后再导入其他模块 =====================
+# 现在才导入可能依赖libGL的模块
+try:
+    import cv2
+    print(f"✅ OpenCV导入成功: {cv2.__version__}")
+except:
+    print("⚠️ OpenCV导入失败")
+
+# 继续导入你的其他模块...
+from src.vector_store import SmartVectorStore
+from src.image_processor import image_processor
+from src.pdf_processor import PDFProcessor
 
 # ===================== 导入自定义模块 =====================
 print("📂 开始导入自定义模块...")
