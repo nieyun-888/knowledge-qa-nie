@@ -79,7 +79,7 @@ opentelemetry-sdk==1.39.1
 opentelemetry-semantic-conventions==0.60b1
 orjson==3.11.7
 overrides==7.7.0
-packaging==26.0
+packaging==23.2
 pandas==2.3.3
 pillow==12.1.0
 posthog==5.4.0
