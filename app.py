@@ -19,22 +19,26 @@ def emergency_setup():
     os.environ['DISPLAY'] = ':99'
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     
-    # 立即尝试安装libGL
+    # 立即尝试安装libGL（仅Debian/Ubuntu系统）
     try:
-        print("📦 紧急安装libGL...")
-        subprocess.run(
-            ["apt-get", "update", "-y"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False
-        )
-        subprocess.run(
-            ["apt-get", "install", "-y", "libgl1-mesa-glx"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False
-        )
-        print("✅ libGL安装完成")
+        # 检测系统是否为Debian/Ubuntu
+        if platform.system() == "Linux" and os.path.exists("/etc/debian_version"):
+            print("📦 紧急安装libGL...")
+            subprocess.run(
+                ["apt-get", "update", "-y"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False
+            )
+            subprocess.run(
+                ["apt-get", "install", "-y", "libgl1-mesa-glx"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False
+            )
+            print("✅ libGL安装完成")
+        else:
+            print("ℹ️ 非Debian系统，跳过libGL安装")
     except Exception as e:
         print(f"⚠️ libGL安装失败: {e}")
 
@@ -48,8 +52,17 @@ if 'STREAMLIT_SERVER_TYPE' in os.environ or os.environ.get('HOME') == '/home/app
 try:
     import cv2
     print(f"✅ OpenCV导入成功: {cv2.__version__}")
-except:
-    print("⚠️ OpenCV导入失败")
+except ImportError:
+    # 尝试导入headless版本
+    try:
+        import cv2_headless as cv2
+        print(f"✅ OpenCV Headless导入成功: {cv2.__version__}")
+    except:
+        print("⚠️ OpenCV导入失败")
+        cv2 = None  # 显式赋值避免后续报错
+except Exception as e:
+    print(f"⚠️ OpenCV导入异常: {e}")
+    cv2 = None
 
 # 继续导入你的其他模块...
 from src.vector_store import SmartVectorStore
@@ -75,7 +88,13 @@ print("\n🔍 开始测试OCR基础依赖...")
 
 # 测试OpenCV
 try:
-    import cv2
+    # 优先使用已导入的cv2，未导入则重新尝试导入
+    if 'cv2' not in locals() or cv2 is None:
+        try:
+            import cv2
+        except ImportError:
+            import cv2_headless as cv2
+    
     print(f"✅ OpenCV版本: {cv2.__version__}")
     print(f"   - 安装路径: {cv2.__file__}")
     # 检查是否是headless版本
@@ -113,6 +132,7 @@ except ImportError as e:
     print(f"❌ RapidOCR/ONNX导入失败: {e}")
 
 # 导入image_processor
+# 导入image_processor
 print("\n📦 导入 image_processor...")
 try:
     from src.image_processor import image_processor
@@ -125,7 +145,7 @@ try:
     else:
         print("   - ⚠️ image_processor没有ocr_engine属性")
         
-except ImportError as e:
+except (ImportError, AttributeError) as e:  # 捕获更多异常类型
     print(f"❌ image_processor导入失败: {e}")
     print("🔧 创建DummyImageProcessor占位符...")
     
@@ -205,9 +225,12 @@ def is_streamlit_cloud():
 def get_chroma_db_path():
     """获取向量库路径（兼容本地/Cloud）"""
     if is_streamlit_cloud():
-        # 重要：Streamlit Cloud的持久化目录
-        return "/home/appuser/chroma_db"
-    return "./chroma_db"
+        chroma_path = "/home/appuser/chroma_db"
+    else:
+        chroma_path = "./chroma_db"
+    # 确保目录存在且可写
+    os.makedirs(chroma_path, exist_ok=True)
+    return chroma_path
 
 
 def get_pdf_data_path():
@@ -260,10 +283,11 @@ class DeepSeekAPI:
 
     def is_logged_in(self) -> bool:
         # 严格检查：必须有API Key且是通过登录设置的
-        return (st.session_state.api_key is not None 
-                and st.session_state.api_key.strip() != ""
-                and st.session_state.api_key_set)  # 必须是通过登录设置的
-
+        return (
+            isinstance(st.session_state.api_key, str) 
+            and st.session_state.api_key.strip() != ""
+            and st.session_state.api_key_set
+        )
     def test_api_connection(self) -> Dict:
         if not self.is_logged_in():
             return {"success": False, "message": "未设置 API Key"}
@@ -859,25 +883,51 @@ def main():
                             """清理ChromaDB相关资源"""
                             try:
                                 # 1. 清除session state
-                                if 'vector_store' in st.session_state:
-                                    st.session_state.vector_store = None
                                 st.session_state.vector_store_initialized = False
+                                st.session_state.vector_store = None
                                 
-                                # 2. 如果有ChromaDB客户端，尝试清理
-                                try:
-                                    import chromadb
-                                    # 新版本chromadb可能有清理方法
-                                    chromadb.Client().clear_system_cache()
-                                except:
-                                    pass
+                                # 2. 删除向量库目录
+                                chroma_path = get_chroma_db_path()
+                                if os.path.exists(chroma_path):
+                                    shutil.rmtree(chroma_path)
+                                    st.success(f"✅ 已删除向量库目录: {chroma_path}")
                                 
-                                # 3. 垃圾回收
-                                import gc
-                                gc.collect()
+                                # 3. 删除状态文件
+                                status_file = os.path.join(chroma_path, "generation_status.json")
+                                if os.path.exists(status_file):
+                                    os.remove(status_file)
                                 
-                                print("✅ ChromaDB资源已清理")
+                                st.success("🔥 所有向量库数据已清空！")
                             except Exception as e:
-                                print(f"⚠️ 清理资源时出错: {e}")
+                                st.error(f"❌ 清空数据失败: {str(e)}")
+                        
+                        cleanup_chroma_resources()
+                        st.rerun()
+            
+            elif mode == "🔍 只检索模式":
+                st.info("✅ 当前已处于只检索模式，无需操作")
+            
+            elif mode == "💥 强制全部重新处理":
+                st.error("⚠️ **强制重新处理**：将删除现有向量库并重新生成所有数据！")
+                if st.button("开始强制重新生成", type="primary", key="force_regen_btn"):
+                    # 先清空再重新生成
+                    st.session_state.vector_store_initialized = False
+                    st.session_state.vector_store = None
+                    
+                    # 删除状态文件触发重新生成
+                    status_file = os.path.join(get_chroma_db_path(), "generation_status.json")
+                    if os.path.exists(status_file):
+                        os.remove(status_file)
+                    
+                    # 重新初始化
+                    vector_store = generate_vector_store_from_pdfs(get_pdf_data_path(), get_chroma_db_path())
+                    if vector_store:
+                        st.success("✅ 强制重新生成完成！")
+                        st.rerun()
+                    else:
+                        st.error("❌ 强制重新生成失败！")
+                        
+                        
                         
                         # 执行清理
                         cleanup_chroma_resources()
