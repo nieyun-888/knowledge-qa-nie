@@ -36,6 +36,7 @@ Jinja2>=3.1.0
 MarkupSafe>=2.1.0
 packaging==23.2
 tzdata>=2023.0
+langchain-text-splitters
 
 # ====================== 禁止！！不要动 ======================
 # 下面这些全部删掉，不要出现在你的 requirements 里

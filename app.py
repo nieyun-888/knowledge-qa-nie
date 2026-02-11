@@ -70,7 +70,7 @@ from src.image_processor import image_processor
 # LangChain 相关导入
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.pdf_processor import PDFProcessor
 
 # ===================== 导入自定义模块 =====================
