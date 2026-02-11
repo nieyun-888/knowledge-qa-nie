@@ -245,93 +245,138 @@ class PDFProcessor:
             
         return status
 
-    # ===================== 以下原有代码完全不变 =====================
-    def _extract_pdf_image_page(self, pdf_path: str, page_num: int) -> str:
-        """将PDF单页转为图片，调用OCR识别"""
+    # ===================== 核心修改：按PDF文件加载（而非按页）=====================
+    def _extract_pdf_full_text(self, pdf_path: str) -> str:
+        """提取整个PDF的完整文本（原生文本+OCR兜底）"""
+        full_text = []
         try:
-            doc = fitz.open(pdf_path)
-            page = doc.load_page(page_num)
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            doc.close()
-            return self._ocr_from_image(img)
+            # 第一步：尝试读取原生文本（整份PDF）
+            loader = PyPDFLoader(pdf_path)
+            pages = loader.load()
+            native_text = "\n\n".join([page.page_content.strip() for page in pages if page.page_content.strip()])
+            
+            if native_text and len(native_text) > 50:  # 原生文本足够多，直接使用
+                full_text.append(native_text)
+                logger.info(f"✅ {pdf_path} 原生文本提取成功，字符数: {len(native_text)}")
+            else:
+                # 第二步：原生文本不足，整份PDF逐页OCR
+                logger.info(f"⚠️ {pdf_path} 原生文本不足，启动整份PDF OCR识别...")
+                doc = fitz.open(pdf_path)
+                total_pages = len(doc)
+                
+                for page_idx in range(total_pages):
+                    page = doc.load_page(page_idx)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    ocr_text = self._ocr_from_image(img)
+                    if ocr_text:
+                        full_text.append(f"=== 第{page_idx+1}页 ===\n{ocr_text}")
+                
+                doc.close()
+                logger.info(f"✅ {pdf_path} OCR识别完成，共处理{total_pages}页")
+            
+            return "\n\n".join(full_text).strip()
+        
         except Exception as e:
-            logger.error(f"PDF转图片失败（第{page_num+1}页）: {e}")
+            logger.error(f"❌ {pdf_path} 文本提取失败: {e}", exc_info=True)
             return ""
 
-    def load_pdf(self, pdf_path: str) -> List[Document]:
-        """加载单个PDF文件（原生文本优先+OCR图片兜底）"""
+    def load_single_pdf(self, pdf_path: str) -> Document:
+        """加载单个PDF为单个Document对象（按文件分批）"""
         if not os.path.exists(pdf_path):
             logger.error(f"PDF文件不存在: {pdf_path}")
-            return []
+            return None
+        
+        # 提取整份PDF的完整文本
+        full_text = self._extract_pdf_full_text(pdf_path)
+        if not full_text:
+            full_text = "[该PDF未提取到有效文本]"
+        
+        # 创建单个Document对象（代表整个PDF）
+        doc = Document(
+            page_content=full_text,
+            metadata={
+                "source": os.path.basename(pdf_path),
+                "file_path": pdf_path,
+                "total_pages": len(fitz.open(pdf_path)) if fitz.open(pdf_path) else 0,
+                "content_type": "native" if "=== 第" not in full_text else "ocr",
+                "processed_at": str(pd.Timestamp.now())  # 需导入pandas：import pandas as pd
+            }
+        )
+        logger.info(f"✅ {pdf_path} 已加载为单个Document对象")
+        return doc
 
-        try:
-            logger.info(f"正在加载PDF（原生文本+OCR）: {pdf_path}")
-            loader = PyPDFLoader(pdf_path)
-            documents = loader.load()
-            total_pages = len(documents)
-            ocr_count = 0
+    def load_pdfs_batch(self, pdf_paths: List[str]) -> List[Document]:
+        """批量加载多个PDF（每个PDF对应一个Document对象）"""
+        batch_docs = []
+        for pdf_path in pdf_paths:
+            doc = self.load_single_pdf(pdf_path)
+            if doc:
+                batch_docs.append(doc)
+        
+        logger.info(f"✅ 批量加载完成，共处理{len(pdf_paths)}个PDF，成功{len(batch_docs)}个")
+        return batch_docs
 
-            for page_idx, doc in enumerate(documents):
-                native_text = doc.page_content.strip()
-                if not native_text or len(native_text) < 10:
-                    if not get_ocr_engine():
-                        logger.warning(f"第{page_idx+1}页无原生文本，但OCR未初始化，跳过")
-                        continue
-                    logger.info(f"第{page_idx+1}页无原生文本，启动OCR识别...")
-                    ocr_text = self._extract_pdf_image_page(pdf_path, page_idx)
-                    if ocr_text:
-                        doc.page_content = ocr_text
-                        ocr_count += 1
-                        doc.metadata["content_type"] = "ocr"
-                    else:
-                        doc.page_content = "[OCR未识别到有效文字]"
-                        doc.metadata["content_type"] = "ocr_failed"
-                else:
-                    doc.metadata["content_type"] = "native"
-
-                doc.metadata["source"] = os.path.basename(pdf_path)
-                doc.metadata["file_path"] = pdf_path
-                doc.metadata["page_number"] = page_idx + 1
-
-            logger.info(f"PDF加载完成：共{total_pages}页，其中{ocr_count}页由OCR识别")
-            return documents
-        except Exception as e:
-            logger.error(f"加载PDF失败 {pdf_path}: {str(e)}", exc_info=True)
-            return []
-
-    def load_pdfs_from_directory(self, pdf_dir: str) -> List[Document]:
-        """从目录加载所有PDF文件"""
-        all_documents = []
-
+    def load_pdfs_from_directory(self, pdf_dir: str, batch_size: int = None) -> List[List[Document]]:
+        """从目录加载PDF，支持按批次返回（每批N个PDF文件）"""
+        all_docs = []
+        batch_docs = []
+        
         if not os.path.exists(pdf_dir):
             logger.error(f"PDF目录不存在: {pdf_dir}")
-            return all_documents
-
-        pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
-
+            return []
+        
+        pdf_files = [os.path.join(pdf_dir, f) for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
         if not pdf_files:
             logger.warning(f"在目录 {pdf_dir} 中未找到PDF文件")
-            return all_documents
+            return []
+        
+        logger.info(f"找到 {len(pdf_files)} 个PDF文件，开始按文件分批加载")
+        
+        for idx, pdf_path in enumerate(pdf_files):
+            doc = self.load_single_pdf(pdf_path)
+            if doc:
+                batch_docs.append(doc)
+            
+            # 如果设置了批次大小，达到批次大小则提交
+            if batch_size and len(batch_docs) >= batch_size:
+                all_docs.append(batch_docs)
+                logger.info(f"📦 批次{len(all_docs)}已完成，包含{len(batch_docs)}个PDF")
+                batch_docs = []
+        
+        # 处理最后一批
+        if batch_docs:
+            all_docs.append(batch_docs)
+            logger.info(f"📦 最后一批已完成，包含{len(batch_docs)}个PDF")
+        
+        logger.info(f"✅ 目录加载完成，共生成{len(all_docs)}个批次，总计{len(pdf_files)}个PDF")
+        return all_docs
 
-        logger.info(f"找到 {len(pdf_files)} 个PDF文件，开始批量加载")
-
-        for pdf_file in pdf_files:
-            pdf_path = os.path.join(pdf_dir, pdf_file)
-            documents = self.load_pdf(pdf_path)
-            all_documents.extend(documents)
-
-        logger.info(f"批量加载完成，共加载 {len(all_documents)} 页PDF内容")
-        return all_documents
-
+    # 保留原有的split_documents，但逻辑改为：分割单个PDF的完整文本为多个chunk
     def split_documents(self, documents: List[Document]) -> List[Document]:
-        """分割文档为小块"""
+        """分割文档（每个PDF的完整文本拆分为多个chunk）"""
         if not documents:
             logger.warning("没有文档可供分割")
             return []
 
-        logger.info(f"开始分割 {len(documents)} 个文档")
-        chunks = self.text_splitter.split_documents(documents)
-        logger.info(f"分割完成，共生成 {len(chunks)} 个文本块")
-
-        return chunks
+        logger.info(f"开始分割 {len(documents)} 个PDF文件的文本")
+        all_chunks = []
+        
+        for doc in documents:
+            # 对单个PDF的完整文本进行分割
+            chunks = self.text_splitter.split_text(doc.page_content)
+            # 为每个chunk保留原PDF的元数据
+            for idx, chunk in enumerate(chunks):
+                chunk_doc = Document(
+                    page_content=chunk,
+                    metadata={
+                        **doc.metadata,
+                        "chunk_index": idx,
+                        "total_chunks": len(chunks),
+                        "chunk_size": len(chunk)
+                    }
+                )
+                all_chunks.append(chunk_doc)
+        
+        logger.info(f"分割完成，共生成 {len(all_chunks)} 个文本块（来自{len(documents)}个PDF）")
+        return all_chunks

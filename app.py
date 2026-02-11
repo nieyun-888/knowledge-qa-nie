@@ -503,63 +503,38 @@ class DeepSeekAPI:
 # ===================== 向量库初始化 =====================
 def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path, batch_size=10):
     """
-    分批生成向量库 - 按页分批，不跳页
+    分批生成向量库 - 按文件分批（原按页分批改为按文件）
     :param pdf_dir: PDF文件目录
     :param chroma_db_path: Chroma存储目录
-    :param batch_size: 每批处理页数（不是文件数！）
+    :param batch_size: 每批处理文件数
     """
     import sys
     import traceback
     from src.pdf_processor import PDFProcessor
     
-    # 1. 加载已处理进度
+    # 1. 加载已处理文件列表
     processed_files = load_processed_files()
-    pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
+    all_pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.pdf')]
     
-    # 2. 创建处理状态文件（记录每页的处理进度）
-    progress_file = os.path.join(chroma_db_path, "page_progress.json")
-    page_progress = {}
+    if not all_pdf_files:
+        st.warning("📄 未找到任何PDF文件")
+        return None
     
-    if os.path.exists(progress_file):
-        try:
-            with open(progress_file, 'r', encoding='utf-8') as f:
-                page_progress = json.load(f)
-        except:
-            page_progress = {}
+    # 2. 筛选未处理文件
+    pending_files = [f for f in all_pdf_files if f not in processed_files]
+    st.info(f"📊 进度统计：总待处理文件 {len(pending_files)}，本次处理 {min(batch_size, len(pending_files))} 个文件")
     
-    # 3. 找出未处理的页
-    pending_pages = []
-    for pdf_file in pdf_files:
-        if pdf_file in processed_files:
-            continue
-            
-        file_path = os.path.join(pdf_dir, pdf_file)
-        
-        # 检查这个文件的处理进度
-        if pdf_file not in page_progress:
-            # 获取PDF总页数
-            import fitz
-            doc = fitz.open(file_path)
-            total_pages = len(doc)
-            doc.close()
-            
-            page_progress[pdf_file] = {
-                "total_pages": total_pages,
-                "processed_pages": 0,
-                "pages": [False] * total_pages  # False表示未处理
-            }
-        
-        # 添加未处理的页
-        for page_idx, processed in enumerate(page_progress[pdf_file]["pages"]):
-            if not processed:
-                pending_pages.append((pdf_file, page_idx))
+    # 3. 取本批次要处理的文件（按文件数分批）
+    current_batch_files = pending_files[:batch_size]
+    if not current_batch_files:
+        st.success("🎉 所有PDF文件都已处理完成！")
+        # 加载完整向量库并返回
+        vector_store = load_existing_vector_store(chroma_db_path)
+        st.session_state.vector_store = vector_store
+        st.session_state.vector_store_initialized = True
+        return vector_store
     
-    # 4. 只处理一批页（限制页数，不限制文件数）
-    current_batch = pending_pages[:batch_size]  # 每批只处理10页
-    
-    st.info(f"📊 进度统计：总待处理页数 {len(pending_pages)}，本次处理 {len(current_batch)} 页")
-    
-    # 5. 初始化PDF处理器和向量库
+    # 4. 初始化PDF处理器和向量库
     pdf_processor = PDFProcessor()
     embeddings = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
@@ -568,105 +543,81 @@ def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path, batch_size=10):
     )
     
     # 加载或创建向量库
-    vector_store = None
-    if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
-        try:
-            vector_store = Chroma(
-                persist_directory=chroma_db_path,
-                embedding_function=embeddings
-            )
-        except:
-            pass
+    vector_store = load_existing_vector_store(chroma_db_path)
     
-    # 6. 逐页处理（不是逐文件）
+    # 5. 逐文件处理（按文件分批）
     progress_bar = st.progress(0, text="准备处理...")
+    total_batch_files = len(current_batch_files)
     
-    for idx, (file_name, page_idx) in enumerate(current_batch):
+    for idx, file_name in enumerate(current_batch_files):
         file_path = os.path.join(pdf_dir, file_name)
+        current_progress = (idx + 1) / total_batch_files
         
-        # 计算总体进度
-        total_done = sum(p["processed_pages"] for p in page_progress.values())
-        total_all = sum(p["total_pages"] for p in page_progress.values())
-        current_progress = (total_done + idx + 1) / total_all
-        
+        # 更新进度条
         progress_bar.progress(
             current_progress, 
-            text=f"处理: {file_name} 第{page_idx+1}页 ({total_done + idx + 1}/{total_all})"
+            text=f"处理中: {file_name} ({idx+1}/{total_batch_files})"
         )
         
         try:
-            # 只加载这一页！
-            documents = pdf_processor.load_single_page(file_path, page_idx)
+            # 加载整个PDF文件的所有页
+            documents = pdf_processor.load_pdf(file_path)  # 假设load_pdf返回该文件所有页的文档对象
+            if not documents:
+                st.warning(f"⚠️ {file_name} 无有效内容，标记为已处理")
+                save_processed_file(file_name)
+                continue
             
-            if documents and documents[0].page_content.strip():
-                chunks = pdf_processor.split_documents(documents)
-                
-                if chunks:
-                    texts = [chunk.page_content for chunk in chunks]
-                    metadatas = [{
-                        "source": file_name,
-                        "page": page_idx + 1,
-                        "content_type": documents[0].metadata.get("content_type", "native")
-                    } for chunk in chunks]
-                    
-                    if vector_store:
-                        vector_store.add_texts(texts, metadatas=metadatas)
-                    else:
-                        vector_store = Chroma.from_texts(
-                            texts,
-                            embeddings,
-                            persist_directory=chroma_db_path,
-                            metadatas=metadatas
-                        )
-                    
-                    # 标记这一页已处理
-                    page_progress[file_name]["pages"][page_idx] = True
-                    page_progress[file_name]["processed_pages"] += 1
-                    
-                    # 如果这个文件的所有页都处理完了，标记文件已完成
-                    if page_progress[file_name]["processed_pages"] == page_progress[file_name]["total_pages"]:
-                        save_processed_file(file_name)
-                    
-                    st.success(f"✅ {file_name} 第{page_idx+1}页 处理完成")
-                else:
-                    st.warning(f"⚠️ {file_name} 第{page_idx+1}页 分割后无内容")
-                    # 仍然标记为已处理，避免卡住
-                    page_progress[file_name]["pages"][page_idx] = True
-                    page_progress[file_name]["processed_pages"] += 1
+            # 分割文本
+            chunks = pdf_processor.split_documents(documents)
+            if not chunks:
+                st.warning(f"⚠️ {file_name} 分割后无内容，标记为已处理")
+                save_processed_file(file_name)
+                continue
+            
+            # 构建元数据
+            texts = [chunk.page_content for chunk in chunks]
+            metadatas = [{
+                "source": file_name,
+                "page": chunk.metadata.get("page", 0) + 1,  # 页码从1开始
+                "content_type": chunk.metadata.get("content_type", "native")
+            } for chunk in chunks]
+            
+            # 添加到向量库
+            if vector_store:
+                vector_store.add_texts(texts, metadatas=metadatas)
             else:
-                st.warning(f"⚠️ {file_name} 第{page_idx+1}页 无有效内容")
-                page_progress[file_name]["pages"][page_idx] = True
-                page_progress[file_name]["processed_pages"] += 1
+                vector_store = Chroma.from_texts(
+                    texts,
+                    embeddings,
+                    persist_directory=chroma_db_path,
+                    metadatas=metadatas
+                )
+            
+            # 标记文件已处理
+            save_processed_file(file_name)
+            st.success(f"✅ {file_name} 处理完成（共{len(documents)}页，{len(chunks)}个文本块）")
+            
+            # 每处理一个文件就持久化
+            if vector_store:
+                vector_store.persist()
                 
         except Exception as e:
-            st.error(f"❌ {file_name} 第{page_idx+1}页 处理失败: {str(e)}")
-            # 失败不标记，下次重试
+            error_detail = traceback.format_exc()[:300]
+            st.error(f"❌ {file_name} 处理失败: {str(e)} | 详情: {error_detail}")
             continue
-        
-        # 每处理一页就保存进度
-        with open(progress_file, 'w', encoding='utf-8') as f:
-            json.dump(page_progress, f, ensure_ascii=False, indent=2)
-        
-        # 每处理一页就持久化
-        if vector_store:
-            vector_store.persist()
     
-    # 7. 更新session state
+    # 6. 更新session state
     if vector_store:
+        vector_store.persist()
         st.session_state.vector_store = vector_store
         st.session_state.vector_store_initialized = True
         
         # 检查是否全部完成
-        all_done = all(
-            p["processed_pages"] == p["total_pages"] 
-            for p in page_progress.values()
-        )
-        
-        if all_done:
-            st.success("🎉 恭喜！所有PDF的所有页面都已处理完成！")
+        remaining_files = [f for f in all_pdf_files if f not in processed_files]
+        if remaining_files:
+            st.info(f"📌 本批次处理完成，还剩 {len(remaining_files)} 个文件，请再次点击「生成/继续处理向量库」")
         else:
-            remaining = sum(p["total_pages"] - p["processed_pages"] for p in page_progress.values())
-            st.info(f"📌 本批次处理完成，还剩 {remaining} 页，请再次点击「生成/继续处理向量库」")
+            st.success("🎉 恭喜！所有PDF文件都已处理完成！")
     
     return vector_store
 
