@@ -9,62 +9,175 @@ import time
 from typing import List, Dict, Any
 
 # ===================== 精简版环境设置 =====================
+# ===================== 精简版环境设置 =====================
 def setup_headless_environment():
-    """设置无头环境变量（必须在导入任何OCR相关模块之前设置）"""
+    """设置无头环境变量并安装系统依赖（带详细调试信息）"""
+    import platform
+    
+    # 打印系统信息
+    print("="*50)
+    print("🔍 系统环境调试信息")
+    print("="*50)
+    print(f"🐍 Python版本: {sys.version}")
+    print(f"💻 操作系统: {platform.platform()}")
+    print(f"📁 当前工作目录: {os.getcwd()}")
+    
     # 检查是否是Cloud环境
     is_cloud = 'STREAMLIT_SERVER_TYPE' in os.environ
+    print(f"🌐 Cloud环境: {'是' if is_cloud else '否'}")
     
     if is_cloud:
-        print("🌐 Cloud环境：设置无头环境变量")
+        print("📦 开始安装系统依赖...")
+        start_time = time.time()
+        
+        # 安装libGL系统依赖
+        try:
+            print("  - 更新apt包列表...")
+            update_result = subprocess.run(
+                ["apt-get", "update", "-y"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+            if update_result.returncode == 0:
+                print("    ✅ apt更新成功")
+            else:
+                print(f"    ⚠️ apt更新失败: {update_result.stderr[:200]}")
+        except Exception as e:
+            print(f"    ❌ apt更新异常: {e}")
+        
+        try:
+            print("  - 安装libgl1-mesa-glx...")
+            install_result = subprocess.run(
+                ["apt-get", "install", "-y", "libgl1-mesa-glx"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+            if install_result.returncode == 0:
+                print("    ✅ libgl1-mesa-glx安装成功")
+            else:
+                print(f"    ⚠️ libgl1-mesa-glx安装失败: {install_result.stderr[:200]}")
+        except Exception as e:
+            print(f"    ❌ libgl1-mesa-glx安装异常: {e}")
+        
         # 设置无头环境变量
+        print("🔄 设置无头环境变量...")
         os.environ['DISPLAY'] = ':99'
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 减少TensorFlow日志
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '0'
+        print("    ✅ 环境变量设置完成")
+        print(f"    - DISPLAY={os.environ.get('DISPLAY')}")
+        print(f"    - QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM')}")
+        
+        elapsed_time = time.time() - start_time
+        print(f"⏱️ 系统依赖安装耗时: {elapsed_time:.2f}秒")
     else:
-        print("💻 本地环境：保持原有配置")
+        print("💻 本地环境：跳过系统依赖安装")
+    
+    print("="*50)
 
 # 立即执行环境设置（在所有导入之前）
 setup_headless_environment()
 
 # ===================== 导入自定义模块 =====================
-print("📂 导入自定义模块...")
+print("📂 开始导入自定义模块...")
+print("-"*50)
 
 # 先导入不依赖OCR的模块
 try:
     from src.vector_store import SmartVectorStore
-except ImportError:
+    print("✅ SmartVectorStore 导入成功")
+except ImportError as e:
+    print(f"❌ SmartVectorStore 导入失败: {e}")
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    print(f"📁 添加路径: {os.path.dirname(os.path.abspath(__file__))}")
     from src.vector_store import SmartVectorStore
+    print("✅ SmartVectorStore 二次导入成功")
 
-# 延迟导入OCR相关模块（确保环境已配置）
+print("\n🔍 开始测试OCR基础依赖...")
+
+# 测试OpenCV
 try:
-    # 先测试OCR基础依赖
     import cv2
     print(f"✅ OpenCV版本: {cv2.__version__}")
-    
-    from PIL import Image
-    print("✅ PIL/Pillow已导入")
-    
-    # 再导入image_processor
-    from src.image_processor import image_processor
-    print("✅ image_processor已导入")
-    
+    print(f"   - 安装路径: {cv2.__file__}")
+    # 检查是否是headless版本
+    build_info = cv2.getBuildInformation()
+    is_headless = 'headless' in build_info.lower()
+    print(f"   - 版本类型: {'无头(Headless)' if is_headless else '标准(GUI)'}")
+    if 'libGL' in build_info:
+        print(f"   - libGL: 已链接")
 except ImportError as e:
-    print(f"❌ OCR相关模块导入失败: {e}")
-    # 创建临时的image_processor占位符
+    print(f"❌ OpenCV导入失败: {e}")
+except Exception as e:
+    print(f"❌ OpenCV初始化失败: {e}")
+
+# 测试PIL
+try:
+    from PIL import Image, __version__ as pil_version
+    print(f"✅ PIL/Pillow版本: {pil_version}")
+    print(f"   - 安装路径: {Image.__file__}")
+except ImportError as e:
+    print(f"❌ PIL/Pillow导入失败: {e}")
+
+# 测试RapidOCR（只导入，不初始化）
+try:
+    import rapidocr_onnxruntime
+    print(f"✅ RapidOCR模块: 可导入")
+    print(f"   - 版本: {getattr(rapidocr_onnxruntime, '__version__', '未知')}")
+    print(f"   - 安装路径: {rapidocr_onnxruntime.__file__}")
+    
+    # 测试ONNX Runtime
+    import onnxruntime as ort
+    print(f"✅ ONNX Runtime版本: {ort.__version__}")
+    print(f"   - 可用执行提供者: {ort.get_available_providers()}")
+    print(f"   - 默认设备: {ort.get_device()}")
+except ImportError as e:
+    print(f"❌ RapidOCR/ONNX导入失败: {e}")
+
+# 导入image_processor
+print("\n📦 导入 image_processor...")
+try:
+    from src.image_processor import image_processor
+    print("✅ image_processor 导入成功")
+    
+    # 检查image_processor是否有OCR引擎
+    if hasattr(image_processor, 'ocr_engine'):
+        print(f"   - OCR引擎类型: {type(image_processor.ocr_engine).__name__}")
+        print(f"   - OCR引擎状态: {'已初始化' if image_processor.ocr_engine else '未初始化'}")
+    else:
+        print("   - ⚠️ image_processor没有ocr_engine属性")
+        
+except ImportError as e:
+    print(f"❌ image_processor导入失败: {e}")
+    print("🔧 创建DummyImageProcessor占位符...")
+    
     class DummyImageProcessor:
         def display_image_preview(self, *args, **kwargs):
-            st.warning("⚠️ OCR功能暂不可用")
+            st.warning("⚠️ OCR功能暂不可用（Dummy模式）")
         
         def process_uploaded_image(self, uploaded_file):
             return {
                 "success": False,
-                "message": "OCR引擎初始化失败，请检查依赖",
-                "text": ""
+                "message": "OCR引擎初始化失败，请检查依赖和系统库",
+                "text": "",
+                "debug": {
+                    "error": str(e),
+                    "cloud_env": 'STREAMLIT_SERVER_TYPE' in os.environ
+                }
             }
     
     image_processor = DummyImageProcessor()
+    print("✅ DummyImageProcessor 创建完成")
+
+print("-"*50)
+print("📂 模块导入完成\n")
+
 
 from math import floor
 
@@ -637,26 +750,78 @@ def main():
         st.markdown("---")
         st.markdown("### 🔍 OCR状态检查")
 
-        if st.button("🔧 检查OCR引擎状态", key="check_ocr_status"):
-            with st.spinner("检查OCR状态..."):
+        if st.button("🔧 详细诊断OCR引擎", key="check_ocr_status"):
+            with st.spinner("正在收集OCR诊断信息..."):
                 try:
-                    # 延迟导入避免循环依赖
                     from src.pdf_processor import PDFProcessor
+                    import platform
+                    import subprocess
                     
                     processor = PDFProcessor()
                     status = processor.check_ocr_status()
                     
-                    if status.get("available"):
-                        st.success("✅ OCR引擎可用")
-                    else:
-                        st.error("❌ OCR引擎不可用")
+                    # 显示诊断结果
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if status.get("available"):
+                            st.success("✅ OCR引擎: 可用")
+                        else:
+                            st.error("❌ OCR引擎: 不可用")
+                    with col2:
+                        st.info(f"初始化状态: {'已初始化' if status.get('initialized') else '未初始化'}")
+                    
+                    # 详细诊断信息
+                    with st.expander("📋 详细诊断信息", expanded=True):
+                        # 环境信息
+                        st.subheader("🖥️ 环境信息")
+                        env_info = {
+                            "Python版本": sys.version.split()[0],
+                            "操作系统": platform.platform(),
+                            "Cloud环境": '是' if is_streamlit_cloud() else '否',
+                            "DISPLAY": os.environ.get('DISPLAY', '未设置'),
+                            "QT_QPA_PLATFORM": os.environ.get('QT_QPA_PLATFORM', '未设置')
+                        }
+                        st.json(env_info)
                         
-                    # 显示详细信息
-                    with st.expander("查看详细信息"):
+                        # OCR状态
+                        st.subheader("🔧 OCR状态")
                         st.json(status)
                         
+                        # 系统库检查
+                        st.subheader("📦 系统库检查")
+                        try:
+                            ld_config = subprocess.run(['ldconfig', '-p'], 
+                                                     stdout=subprocess.PIPE, 
+                                                     stderr=subprocess.PIPE,
+                                                     text=True, 
+                                                     timeout=5)
+                            libgl_found = 'libGL.so' in ld_config.stdout
+                            if libgl_found:
+                                st.success("✅ libGL.so: 已安装")
+                            else:
+                                st.error("❌ libGL.so: 未找到")
+                        except Exception as e:
+                            st.warning(f"⚠️ 无法检查系统库: {e}")
+                            
+                        # OpenCV信息
+                        st.subheader("🎥 OpenCV信息")
+                        try:
+                            import cv2
+                            st.json({
+                                "版本": cv2.__version__,
+                                "安装路径": cv2.__file__,
+                                "headless": 'headless' in cv2.getBuildInformation().lower()
+                            })
+                        except Exception as e:
+                            st.error(f"无法获取OpenCV信息: {e}")
+                            
                 except Exception as e:
-                    st.error(f"检查失败: {str(e)[:100]}")
+                    st.error(f"❌ 诊断失败: {str(e)}")
+                    import traceback
+                    with st.expander("查看错误详情"):
+                        st.code(traceback.format_exc())
+
+
 
         st.markdown("---")
         st.markdown("### 🛠️ 系统管理模式")
