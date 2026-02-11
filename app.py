@@ -497,117 +497,143 @@ class DeepSeekAPI:
         return context_text
 
 # ===================== 向量库初始化 =====================
-def generate_vector_store_from_pdfs(pdf_dir, chroma_dir, batch_size=10):
+# ===================== 向量库分批生成（修正版） =====================
+def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path, batch_size=10):
     """
     分批生成向量库（核心修改：避免一次性处理96个文件）
-    :param pdf_dir: PDF文件目录（你的原有参数）
-    :param chroma_dir: Chroma存储目录（你的原有参数）
-    :param batch_size: 每批处理文件数（默认10个，可在UI调整）
+    :param pdf_dir: PDF文件目录
+    :param chroma_db_path: Chroma存储目录
+    :param batch_size: 每批处理文件数（默认10个）
     """
-    # 1. 加载已处理文件，过滤未处理的（核心：避免重复）
-    processed_files = load_processed_files()
-    pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")]  # 所有PDF
-    unprocessed_files = [f for f in pdf_files if f not in processed_files]     # 未处理的PDF
-    total_files = len(pdf_files)
-    total_processed = len(processed_files)
-    
-    # 2. 显示进度（UI提示，不影响逻辑）
-    st.info(f"📊 分批处理进度：已处理 {total_processed}/{total_files} 个文件 | 剩余 {len(unprocessed_files)} 个")
-    if not unprocessed_files:
-        st.success("✅ 所有文件已处理完成！直接加载现有向量库")
-        return load_existing_vector_store(chroma_dir)  # 加载已有库
-    
-    # 3. 取当前批次文件（只处理batch_size个，核心：控制单次处理量）
-    current_batch = unprocessed_files[:batch_size]
-    st.warning(f"🔄 本次仅处理 {len(current_batch)} 个文件：{current_batch}")
-    
-    # 4. 初始化Embedding（保留你的原有逻辑，强制CPU适配Cloud）
-    from langchain.embeddings import HuggingFaceEmbeddings
-    embeddings = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'},  # Cloud无GPU，必须CPU
-        encode_kwargs={'normalize_embeddings': True}
-    )
-    
-    # 5. 加载现有向量库（增量添加，不覆盖已生成的）
-    vector_store = load_existing_vector_store(chroma_dir)
-    
-    # 6. 逐文件处理当前批次（核心：循环处理，每处理一个保存一次）
-    for idx, file_name in enumerate(current_batch):
-        file_path = os.path.join(pdf_dir, file_name)
-        # 显示单个文件进度
-        progress = (total_processed + idx + 1) / total_files
-        st.progress(progress, text=f"正在处理：{file_name} ({total_processed+idx+1}/{total_files})")
+    try:
+        from src.pdf_processor import PDFProcessor
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_community.vectorstores import Chroma
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
         
-        try:
-            # ========== 保留你原有PDF解析+OCR逻辑（完全不动OCR） ==========
-            from pypdf import PdfReader
-            reader = PdfReader(file_path)
-            text = ""
-            # 第一步：纯文本提取
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text
-            # 第二步：文本提取失败则调用OCR（你的原有逻辑，完全保留）
-            if not text.strip() and cv2 is not None:  # 仅当OpenCV/OCR可用时调用
-                st.warning(f"⚠️ {file_name} 纯文本提取失败，触发OCR处理...")
-                # 调用你已修复的image_processor（OCR逻辑完全不动）
-                with open(file_path, "rb") as f:
-                    ocr_result = image_processor.process_uploaded_image(f)
-                if ocr_result.get("success"):
-                    text = ocr_result.get("text", "")
-            # ========== OCR逻辑结束（完全未改） ==========
-            
-            # 7. 文本拆分（避免单文件过大导致超时）
-            if text.strip():
-                from langchain.text_splitter import RecursiveCharacterTextSplitter
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=500,  # 每块500字符
-                    chunk_overlap=50, # 重叠50字符保证上下文
-                    length_function=len
+        # 1. 加载已处理文件，过滤未处理的
+        processed_files = load_processed_files()
+        pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")]
+        unprocessed_files = [f for f in pdf_files if f not in processed_files]
+        total_files = len(pdf_files)
+        total_processed = len(processed_files)
+        
+        # 2. 显示进度
+        st.info(f"📊 分批处理进度：已处理 {total_processed}/{total_files} 个文件 | 剩余 {len(unprocessed_files)} 个")
+        if not unprocessed_files:
+            st.success("✅ 所有文件已处理完成！直接加载现有向量库")
+            return st.session_state.vector_store if st.session_state.vector_store_initialized else None
+        
+        # 3. 取当前批次文件
+        current_batch = unprocessed_files[:batch_size]
+        st.info(f"🔄 本次处理 {len(current_batch)} 个文件：{', '.join(current_batch)}")
+        
+        # 4. 初始化Embedding模型（CPU模式）
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        
+        # 5. 初始化PDF处理器
+        pdf_processor = PDFProcessor()
+        
+        # 6. 加载或创建向量库
+        vector_store = None
+        if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
+            try:
+                vector_store = Chroma(
+                    persist_directory=chroma_db_path,
+                    embedding_function=embeddings
                 )
-                chunks = text_splitter.split_text(text)
-                
-                # 8. 增量添加到向量库（核心：不覆盖已有数据）
-                if vector_store:
-                    # 已有库：增量添加
-                    vector_store.add_texts(
-                        chunks, 
-                        metadatas=[{"source": file_name}] * len(chunks)  # 标记文件来源
-                    )
-                else:
-                    # 无库：新建库
-                    from langchain.vectorstores import Chroma
-                    vector_store = Chroma.from_texts(
-                        chunks,
-                        embeddings,
-                        persist_directory=chroma_dir,
-                        metadatas=[{"source": file_name}] * len(chunks)
-                    )
-                
-                # 9. 保存已处理记录（核心：处理完一个存一个，崩溃不丢进度）
-                save_processed_file(file_name)
-                st.success(f"✅ 完成：{file_name}（生成{len(chunks)}个向量块）")
-            else:
-                st.error(f"❌ {file_name} 无有效文本（OCR也未提取到内容）")
+                st.info("📚 加载现有向量库，将增量添加新文档")
+            except Exception as e:
+                st.warning(f"⚠️ 加载现有向量库失败，将创建新库: {e}")
         
-        except Exception as e:
-            st.error(f"❌ 处理{file_name}失败：{str(e)}")
-            continue  # 单个文件失败不影响整批
-    
-    # 10. 持久化向量库（必须做，否则Cloud重启丢失）
-    if vector_store:
-        vector_store.persist()
-    
-    # 11. 提示后续操作（UI友好性）
-    remaining = len(unprocessed_files) - batch_size
-    if remaining > 0:
-        st.info(f"📌 本批次处理完成！剩余{remaining}个文件 → 刷新页面点击「生成」继续处理下一批")
-    else:
-        st.success("🎉 所有文件处理完成！")
-    
-    return vector_store
+        # 7. 逐文件处理当前批次
+        progress_bar = st.progress(0, text="准备处理...")
+        for idx, file_name in enumerate(current_batch):
+            file_path = os.path.join(pdf_dir, file_name)
+            current_progress = (total_processed + idx + 1) / total_files
+            progress_bar.progress(current_progress, text=f"正在处理：{file_name} ({total_processed+idx+1}/{total_files})")
+            
+            try:
+                # 加载PDF并处理
+                documents = pdf_processor.load_pdf(file_path)
+                if not documents:
+                    st.warning(f"⚠️ {file_name} 无有效内容，跳过")
+                    save_processed_file(file_name)  # 仍然标记为已处理
+                    continue
+                
+                # 分割文档
+                chunks = pdf_processor.split_documents(documents)
+                if not chunks:
+                    st.warning(f"⚠️ {file_name} 分割后无有效文本块，跳过")
+                    save_processed_file(file_name)
+                    continue
+                
+                # 提取文本和元数据
+                texts = [chunk.page_content for chunk in chunks]
+                metadatas = [{
+                    "source": file_name,
+                    "page": chunk.metadata.get("page_number", 0),
+                    "content_type": chunk.metadata.get("content_type", "native")
+                } for chunk in chunks]
+                
+                # 添加到向量库
+                if vector_store:
+                    # 增量添加
+                    vector_store.add_texts(texts, metadatas=metadatas)
+                else:
+                    # 创建新库
+                    vector_store = Chroma.from_texts(
+                        texts,
+                        embeddings,
+                        persist_directory=chroma_db_path,
+                        metadatas=metadatas
+                    )
+                
+                # 保存已处理记录
+                save_processed_file(file_name)
+                st.success(f"✅ {file_name} 处理完成，生成 {len(chunks)} 个向量块")
+                
+            except Exception as e:
+                st.error(f"❌ 处理 {file_name} 失败: {str(e)}")
+                continue
+        
+        # 8. 持久化向量库
+        if vector_store:
+            vector_store.persist()
+            st.success(f"💾 向量库已持久化到 {chroma_db_path}")
+            
+            # 更新session state
+            st.session_state.vector_store = vector_store
+            st.session_state.vector_store_initialized = True
+            
+            # 生成状态文件
+            status_file = os.path.join(chroma_db_path, "generation_status.json")
+            with open(status_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "count": vector_store._collection.count() if hasattr(vector_store, '_collection') else 0,
+                    "initialized": True,
+                    "processed_files": len(load_processed_files())
+                }, f, ensure_ascii=False, indent=2)
+        
+        # 9. 提示剩余文件
+        remaining = len(unprocessed_files) - batch_size
+        if remaining > 0:
+            st.info(f"📌 本批次处理完成！剩余 {remaining} 个文件，请再次点击「生成/继续处理向量库」")
+        else:
+            st.success("🎉 恭喜！所有PDF文件已处理完成！")
+        
+        return vector_store
+        
+    except Exception as e:
+        st.error(f"❌ 向量库生成失败: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        return None
 
 # ========== 新增：加载现有向量库函数（辅助分批） ==========
 def load_existing_vector_store(chroma_dir):
@@ -637,44 +663,9 @@ def initialize_vector_store_once():
         return st.session_state.vector_store
     
     chroma_db_path = get_chroma_db_path()
-    
-    # ========== 新增：从文件恢复状态 ==========
-    status_file = os.path.join(chroma_db_path, "generation_status.json")
-    if os.path.exists(status_file):
-        try:
-            with open(status_file, 'r', encoding='utf-8') as f:
-                status = json.load(f)
-            
-            # 如果文件标记为已初始化，但session state没有
-            if status.get("initialized", False):
-                try:
-                    vector_store = SmartVectorStore(persist_directory=chroma_db_path)
-                    if vector_store.load_existing_vector_store():
-                        st.session_state.vector_store = vector_store
-                        st.session_state.vector_store_initialized = True
-                        st.sidebar.success("✅ 从文件恢复知识库状态成功")
-                        return vector_store
-                except:
-                    pass  # 如果加载失败，继续下面的逻辑
-        except:
-            pass
-    # ========== 新增结束 ==========
-    
     pdf_data_path = get_pdf_data_path()
     
-    # 检查向量库是否已存在（原有逻辑）
-    if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
-        try:
-            vector_store = SmartVectorStore(persist_directory=chroma_db_path)
-            if vector_store.load_existing_vector_store():
-                st.session_state.vector_store = vector_store
-                st.session_state.vector_store_initialized = True
-                st.sidebar.success("✅ 加载现有知识库成功")
-                return vector_store
-        except Exception as e:
-            st.sidebar.warning(f"⚠️ 加载失败: {e}")
-    
-    # 检查是否有PDF文件需要处理
+    # 检查是否有PDF文件
     if not os.path.exists(pdf_data_path):
         st.sidebar.warning("📄 请先上传PDF文件")
         return None
@@ -684,12 +675,7 @@ def initialize_vector_store_once():
         st.sidebar.warning("📄 请先上传PDF文件")
         return None
     
-    # 显示生成选项
-    with st.sidebar:
-        st.markdown("### 🏗️ 知识库生成")
-        if st.button("🚀 生成知识库", type="primary", key="generate_kb_main"):
-            return generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
-    
+    # 直接返回None，让用户点击"生成/继续处理向量库"按钮
     return None
 
 # ===================== PDF上传功能 =====================
@@ -844,21 +830,20 @@ def main():
             value=10,       # 默认10个
             key="batch_size"
         )
-        
-        # 2. 修改原有生成按钮：调用分批函数
+
+        # 修改原有生成按钮：调用分批函数
         if st.button("🚀 生成/继续处理向量库", type="primary"):
             with st.spinner("🔄 分批处理中（Cloud环境建议耐心等待）..."):
-                # 调用修改后的分批函数
                 vector_store = generate_vector_store_from_pdfs(
-                    get_pdf_data_path(),  # 你的原有PDF目录函数
-                    get_chroma_db_path(), # 你的原有Chroma路径函数
-                    batch_size=batch_size # 新增：批次大小
+                    get_pdf_data_path(),   # PDF目录
+                    get_chroma_db_path(),  # Chroma路径
+                    batch_size=batch_size  # 批次大小
                 )
                 if vector_store:
                     st.session_state.vector_store = vector_store
                     st.session_state.vector_store_initialized = True
-                    st.rerun()  # 刷新页面显示最新进度
-        
+                    st.rerun()
+
         # 3. 新增：重置处理进度按钮（需要重新处理时用）
         if st.button("🔄 重置所有处理进度", type="secondary"):
             clear_processed_files()  # 清空已处理记录
