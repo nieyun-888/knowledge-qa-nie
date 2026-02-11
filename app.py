@@ -4,16 +4,18 @@ import sys
 import subprocess
 import requests
 import json
-import logging
+import platform
 import time
+import socket 
+import logging
 from typing import List, Dict, Any
 
-# ===================== 精简版环境设置 =====================
+
 # ===================== 精简版环境设置 =====================
 def setup_headless_environment():
     """设置无头环境变量并安装系统依赖（带详细调试信息）"""
     import platform
-    
+    import socket
     # 打印系统信息
     print("="*50)
     print("🔍 系统环境调试信息")
@@ -21,9 +23,42 @@ def setup_headless_environment():
     print(f"🐍 Python版本: {sys.version}")
     print(f"💻 操作系统: {platform.platform()}")
     print(f"📁 当前工作目录: {os.getcwd()}")
+    print(f"🏠 HOME目录: {os.environ.get('HOME', '未设置')}")
+    print(f"🖥️ 主机名: {socket.gethostname()}")
     
-    # 检查是否是Cloud环境
-    is_cloud = 'STREAMLIT_SERVER_TYPE' in os.environ
+    # 检查是否是Cloud环境 - 增强检测
+    cloud_indicators = [
+        'STREAMLIT_SERVER_TYPE',
+        'STREAMLIT_SHARING',
+        'STREAMLIT_CLOUD',
+        'STREAMLIT_ENV',
+        'IS_STREAMLIT_CLOUD',
+        'HOSTNAME',  # Streamlit Cloud的主机名通常包含streamlit
+        'HOME'  # Streamlit Cloud的HOME是/home/appuser
+    ]
+    
+    is_cloud = any(key in os.environ for key in cloud_indicators)
+    
+    # 额外检测：如果是Streamlit Cloud，HOME通常是/home/appuser
+    if not is_cloud and os.environ.get('HOME') == '/home/appuser':
+        is_cloud = True
+        print("🔍 通过HOME路径检测到Cloud环境")
+    
+    # 额外检测：检查主机名
+    if not is_cloud:
+        try:
+            hostname = socket.gethostname()
+            if 'streamlit' in hostname.lower() or 'cloud' in hostname.lower():
+                is_cloud = True
+                print(f"🔍 通过主机名检测到Cloud环境: {hostname}")
+        except:
+            pass
+    # 额外检测3: 当前工作目录
+    if not is_cloud:
+        cwd = os.getcwd()
+        if '/mount/src' in cwd:
+            is_cloud = True
+            print(f"🔍 通过工作目录检测到Cloud环境: {cwd}")
     print(f"🌐 Cloud环境: {'是' if is_cloud else '否'}")
     
     if is_cloud:
