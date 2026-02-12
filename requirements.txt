@@ -16,7 +16,6 @@ chromadb>=1.4.0
 langchain>=0.2.0
 langchain-community>=0.2.0
 langchain-core>=0.2.0
-langchain-text-splitters>=0.2.0  # ✅ 显式添加这一行！
 sentence-transformers>=5.0.0
 
 numpy>=1.26.0
@@ -36,7 +35,6 @@ Jinja2>=3.1.0
 MarkupSafe>=2.1.0
 packaging==23.2
 tzdata>=2023.0
-langchain-text-splitters
 
 # ====================== 禁止！！不要动 ======================
 # 下面这些全部删掉，不要出现在你的 requirements 里
