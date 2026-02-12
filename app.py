@@ -507,14 +507,42 @@ def initialize_vector_store_once():
     
     chroma_db_path = get_chroma_db_path()
     
-    # ========== 新增：从文件恢复状态 ==========
+    # # ========== 修复：优先加载分批处理生成的向量库 ==========
+    # # 检查是否有page_progress.json文件（分批处理的标志）
+    # progress_file = os.path.join(chroma_db_path, "page_progress.json")
+    # if os.path.exists(progress_file):
+    #     try:
+    #         # 尝试加载分批处理生成的向量库
+    #         from langchain_community.embeddings import HuggingFaceEmbeddings
+    #         from langchain_community.vectorstores import Chroma
+            
+    #         embeddings = HuggingFaceEmbeddings(
+    #             model_name="all-MiniLM-L6-v2",
+    #             model_kwargs={'device': 'cpu'},
+    #             encode_kwargs={'normalize_embeddings': True}
+    #         )
+            
+    #         vector_store = Chroma(
+    #             persist_directory=chroma_db_path,
+    #             embedding_function=embeddings
+    #         )
+            
+    #         # 检查是否有文档
+    #         if vector_store._collection.count() > 0:
+    #             st.session_state.vector_store = vector_store
+    #             st.session_state.vector_store_initialized = True
+    #             st.sidebar.success("✅ 加载分批处理生成的向量库成功")
+    #             return vector_store
+    #     except Exception as e:
+    #         st.sidebar.warning(f"⚠️ 加载分批向量库失败: {e}")
+    
+    # ========== 原有的SmartVectorStore加载逻辑 ==========
     status_file = os.path.join(chroma_db_path, "generation_status.json")
     if os.path.exists(status_file):
         try:
             with open(status_file, 'r', encoding='utf-8') as f:
                 status = json.load(f)
             
-            # 如果文件标记为已初始化，但session state没有
             if status.get("initialized", False):
                 try:
                     vector_store = SmartVectorStore(persist_directory=chroma_db_path)
@@ -524,9 +552,11 @@ def initialize_vector_store_once():
                         st.sidebar.success("✅ 从文件恢复知识库状态成功")
                         return vector_store
                 except:
-                    pass  # 如果加载失败，继续下面的逻辑
+                    pass
         except:
             pass
+
+
     # ========== 新增结束 ==========
     
     pdf_data_path = get_pdf_data_path()
