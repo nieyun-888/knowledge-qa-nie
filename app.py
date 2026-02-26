@@ -230,8 +230,43 @@ if "headless_configured" not in st.session_state:
 
 # ===================== Cloud环境工具函数 =====================
 def is_streamlit_cloud():
-    """判断是否在Streamlit Cloud环境"""
-    return 'STREAMLIT_SERVER_TYPE' in os.environ
+    """判断是否在Streamlit Cloud环境（增强版）"""
+    
+    # 方法1：检查Streamlit特定环境变量
+    cloud_env_vars = [
+        'STREAMLIT_SERVER_TYPE',
+        'STREAMLIT_RUNTIME',
+        'STREAMLIT_SHARING',
+        'IS_STREAMLIT_CLOUD'
+    ]
+    for var in cloud_env_vars:
+        if var in os.environ:
+            return True
+    
+    # 方法2：检查常见路径（Cloud特有）
+    cloud_paths = [
+        '/home/appuser',
+        '/mount/src',
+        '/home/adminuser'
+    ]
+    for path in cloud_paths:
+        if os.path.exists(path):
+            return True
+    
+    # 方法3：检查用户名
+    try:
+        import pwd
+        username = pwd.getpwuid(os.getuid()).pw_name
+        if username in ['appuser', 'adminuser', 'root']:
+            return True
+    except:
+        pass
+    
+    # 方法4：检查环境变量HOME
+    if os.environ.get('HOME') in ['/home/appuser', '/home/adminuser']:
+        return True
+    
+    return False
 
 def get_chroma_db_path():
     """获取向量库路径（兼容本地/Cloud）"""
@@ -343,14 +378,9 @@ def try_download_from_r2(target_path):
     
     return True
 
-
 def upload_to_r2(source_path):
     """将向量库压缩并上传到R2（带详细调试信息）"""
-    # ===== 安全保护：只在Cloud环境上传 =====
-    if not is_streamlit_cloud():
-        st.sidebar.info("⏭️ 非Cloud环境，跳过上传（防止Windows版覆盖R2）")
-        return False
-    # ====================================
+    # ===== 去掉环境判断，直接尝试上传 =====
     st.sidebar.info("🔍 开始上传流程...")
     
     # R2配置
@@ -370,6 +400,10 @@ def upload_to_r2(source_path):
         return False
     
     files = os.listdir(source_path)
+    if not files:
+        st.sidebar.warning("⚠️ 源目录为空，跳过上传")
+        return False
+    
     st.sidebar.info(f"📁 待压缩目录: {len(files)}个文件")
     
     # 创建临时zip文件
@@ -406,14 +440,14 @@ def upload_to_r2(source_path):
     
     # 上传到R2
     try:
-        st.sidebar.info("🔄 连接Cloudflare R2...")
+        st.sidebar.info("🔄 连接Backblaze B2...")
         s3 = boto3.client(
             's3',
             endpoint_url=endpoint,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key
         )
-        st.sidebar.success("✅ R2连接成功")
+        st.sidebar.success("✅ B2连接成功")
         
         st.sidebar.info("⬆️ 开始上传...")
         with open(zip_path, 'rb') as f:
@@ -434,6 +468,7 @@ def upload_to_r2(source_path):
             pass
     
     return True
+
 
 # ===================== DeepSeek API 类 =====================
 class DeepSeekAPI:
@@ -742,7 +777,7 @@ def initialize_vector_store_once():
                         st.sidebar.success("✅ 从文件恢复知识库状态成功")
                         
                         # 上传到R2备份（如果是Cloud环境且之前下载失败的情况）
-                        if is_streamlit_cloud() and not download_success:
+                        if not download_success:  # 只要之前没下载成功，就上传备份
                             st.sidebar.info("🔄 备份现有向量库到R2...")
                             upload_to_r2(chroma_db_path)
                         
@@ -762,10 +797,10 @@ def initialize_vector_store_once():
                 st.sidebar.success("✅ 加载现有知识库成功")
                 
                 # 上传到R2备份（如果是Cloud环境且之前下载失败的情况）
-                if is_streamlit_cloud() and not download_success:
+                if not download_success:
                     st.sidebar.info("🔄 备份现有向量库到R2...")
                     upload_to_r2(chroma_db_path)
-                
+    
                 return vector_store
         except Exception as e:
             st.sidebar.warning(f"⚠️ 加载失败: {e}")
@@ -791,7 +826,7 @@ def initialize_vector_store_once():
             vector_store = generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
             
             # 生成成功后上传到R2
-            if vector_store and is_streamlit_cloud():
+            if vector_store:  # 只要生成成功就上传
                 st.sidebar.info("🔄 上传新生成的向量库到R2...")
                 upload_to_r2(chroma_db_path)
             
