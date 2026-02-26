@@ -9,7 +9,10 @@ import time
 import socket 
 import logging
 from typing import List, Dict, Any
-
+import zipfile  # 新增：用于压缩解压
+import tempfile  # 新增：用于临时文件
+import boto3  # 新增：用于连接R2
+from botocore.exceptions import ClientError  # 新增：捕获R2异常
 # ===================== 超级紧急：第一时间设置环境并安装libGL =====================
 def emergency_setup():
     """在导入任何其他模块前紧急安装libGL"""
@@ -24,27 +27,35 @@ def emergency_setup():
         # 检测系统是否为Debian/Ubuntu
         if platform.system() == "Linux" and os.path.exists("/etc/debian_version"):
             print("📦 紧急安装libGL...")
+            # 添加超时和错误容忍
             subprocess.run(
                 ["apt-get", "update", "-y"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=False
+                timeout=60,  # 添加超时
+                check=False   # 不检查返回值，失败了也继续
             )
             subprocess.run(
                 ["apt-get", "install", "-y", "libgl1-mesa-glx"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=60,
                 check=False
             )
             print("✅ libGL安装完成")
         else:
             print("ℹ️ 非Debian系统，跳过libGL安装")
     except Exception as e:
-        print(f"⚠️ libGL安装失败: {e}")
+        print(f"⚠️ libGL安装失败: {e}")  # 只打印警告，不阻断程序
 
 # ===== 立即执行！在导入任何OCR相关模块之前 =====
-if 'STREAMLIT_SERVER_TYPE' in os.environ or os.environ.get('HOME') == '/home/appuser':
+# 只要是Linux系统，就尝试安装libGL（无论是否Cloud环境）
+if platform.system() == "Linux":
     emergency_setup()
+else:
+    # 非Linux系统也保留原有判断（兼容性）
+    if 'STREAMLIT_SERVER_TYPE' in os.environ or os.environ.get('HOME') == '/home/appuser':
+        emergency_setup()
 # ==============================================
 
 # ===================== 然后再导入其他模块 =====================
@@ -249,6 +260,181 @@ def get_pdf_data_path():
         return cloud_path  # 返回Cloud路径，即使为空
     return "./data/raw_pdfs"
 
+def try_download_from_r2(target_path):
+    """从R2下载并解压向量库（带详细调试信息）"""
+    st.sidebar.info("🔍 开始R2下载流程...")
+    
+    # R2配置（从secrets读取）
+    try:
+        endpoint = st.secrets["R2_ENDPOINT"]
+        access_key = st.secrets["R2_ACCESS_KEY"]
+        secret_key = st.secrets["R2_SECRET_KEY"]
+        bucket = st.secrets["R2_BUCKET"]
+        st.sidebar.success("✅ R2配置读取成功")
+    except Exception as e:
+        st.sidebar.error(f"❌ 读取R2配置失败: {e}")
+        return False
+    
+    # 创建临时文件
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            zip_path = tmp.name
+        st.sidebar.info(f"📁 临时文件创建: {zip_path}")
+    except Exception as e:
+        st.sidebar.error(f"❌ 创建临时文件失败: {e}")
+        return False
+    
+    # 连接R2并下载
+    try:
+        st.sidebar.info("🔄 连接Cloudflare R2...")
+        s3 = boto3.client(
+            's3',
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key
+        )
+        st.sidebar.success("✅ R2连接成功")
+        
+        # 检查文件是否存在
+        try:
+            s3.head_object(Bucket=bucket, Key='chroma_db.zip')
+            st.sidebar.success("✅ 远程文件 chroma_db.zip 存在")
+        except ClientError:
+            st.sidebar.warning("⚠️ 远程文件 chroma_db.zip 不存在")
+            return False
+        
+        # 下载文件
+        st.sidebar.info("⬇️ 开始下载 (100MB)...")
+        s3.download_file(bucket, 'chroma_db.zip', zip_path)
+        
+        # 检查下载文件大小
+        file_size = os.path.getsize(zip_path) / (1024 * 1024)  # MB
+        st.sidebar.success(f"✅ 下载完成! 大小: {file_size:.2f} MB")
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 下载失败: {str(e)}")
+        return False
+    
+    # 解压文件
+    try:
+        st.sidebar.info(f"📦 开始解压到: {target_path}")
+        
+        # 确保目标目录存在
+        os.makedirs(target_path, exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(target_path)
+            
+        # 统计解压后的文件
+        extracted_files = os.listdir(target_path)
+        st.sidebar.success(f"✅ 解压完成! {len(extracted_files)}个文件")
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 解压失败: {str(e)}")
+        return False
+    
+    finally:
+        # 清理临时文件
+        try:
+            os.unlink(zip_path)
+            st.sidebar.info("🧹 临时文件已清理")
+        except:
+            pass
+    
+    return True
+
+
+def upload_to_r2(source_path):
+    """将向量库压缩并上传到R2（带详细调试信息）"""
+    # ===== 安全保护：只在Cloud环境上传 =====
+    if not is_streamlit_cloud():
+        st.sidebar.info("⏭️ 非Cloud环境，跳过上传（防止Windows版覆盖R2）")
+        return False
+    # ====================================
+    st.sidebar.info("🔍 开始上传流程...")
+    
+    # R2配置
+    try:
+        endpoint = st.secrets["R2_ENDPOINT"]
+        access_key = st.secrets["R2_ACCESS_KEY"]
+        secret_key = st.secrets["R2_SECRET_KEY"]
+        bucket = st.secrets["R2_BUCKET"]
+        st.sidebar.success("✅ R2配置读取成功")
+    except Exception as e:
+        st.sidebar.error(f"❌ 读取R2配置失败: {e}")
+        return False
+    
+    # 检查源目录
+    if not os.path.exists(source_path):
+        st.sidebar.error(f"❌ 源目录不存在: {source_path}")
+        return False
+    
+    files = os.listdir(source_path)
+    st.sidebar.info(f"📁 待压缩目录: {len(files)}个文件")
+    
+    # 创建临时zip文件
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            zip_path = tmp.name
+        st.sidebar.info(f"📁 创建临时文件: {zip_path}")
+    except Exception as e:
+        st.sidebar.error(f"❌ 创建临时文件失败: {e}")
+        return False
+    
+    # 压缩文件
+    try:
+        st.sidebar.info("📦 开始压缩...")
+        file_count = 0
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(source_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, source_path)
+                    zf.write(file_path, arcname)
+                    file_count += 1
+                    
+                    # 每10个文件显示一次进度
+                    if file_count % 10 == 0:
+                        st.sidebar.info(f"  已压缩 {file_count} 个文件...")
+        
+        zip_size = os.path.getsize(zip_path) / (1024 * 1024)  # MB
+        st.sidebar.success(f"✅ 压缩完成! {file_count}个文件, {zip_size:.2f} MB")
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 压缩失败: {str(e)}")
+        return False
+    
+    # 上传到R2
+    try:
+        st.sidebar.info("🔄 连接Cloudflare R2...")
+        s3 = boto3.client(
+            's3',
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key
+        )
+        st.sidebar.success("✅ R2连接成功")
+        
+        st.sidebar.info("⬆️ 开始上传...")
+        with open(zip_path, 'rb') as f:
+            s3.upload_fileobj(f, bucket, 'chroma_db.zip')
+        
+        st.sidebar.success("✅ 上传成功!")
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 上传失败: {str(e)}")
+        return False
+    
+    finally:
+        # 清理临时文件
+        try:
+            os.unlink(zip_path)
+            st.sidebar.info("🧹 临时文件已清理")
+        except:
+            pass
+    
+    return True
+
 # ===================== DeepSeek API 类 =====================
 class DeepSeekAPI:
     """DeepSeek API 管理类"""
@@ -275,7 +461,7 @@ class DeepSeekAPI:
         return False
 
     def login_with_password(self, password: str) -> bool:
-        if password == "123456":
+        if password == "nieyun":
             st.session_state.api_key = "sk-4f3e29df9fa54da8bd601ae780111df1"
             st.session_state.api_key_set = True  # 标记为已通过登录设置
             return True
@@ -498,45 +684,49 @@ def generate_vector_store_from_pdfs(pdf_dir, chroma_db_path):
     except Exception as e:
         st.error(f"❌ 生成失败: {str(e)}")
         return None
-
+    
 def initialize_vector_store_once():
-    """一次性初始化向量库，生成后永久保存"""
+    """一次性初始化向量库，生成后永久保存（带R2持久化）"""
+    
     # 如果session state已有，直接返回
     if st.session_state.vector_store_initialized:
+        st.sidebar.info("✅ 使用已存在的会话中的向量库")
         return st.session_state.vector_store
     
     chroma_db_path = get_chroma_db_path()
+    st.sidebar.info(f"📂 向量库路径: {chroma_db_path}")
     
-    # # ========== 修复：优先加载分批处理生成的向量库 ==========
-    # # 检查是否有page_progress.json文件（分批处理的标志）
-    # progress_file = os.path.join(chroma_db_path, "page_progress.json")
-    # if os.path.exists(progress_file):
-    #     try:
-    #         # 尝试加载分批处理生成的向量库
-    #         from langchain_community.embeddings import HuggingFaceEmbeddings
-    #         from langchain_community.vectorstores import Chroma
-            
-    #         embeddings = HuggingFaceEmbeddings(
-    #             model_name="all-MiniLM-L6-v2",
-    #             model_kwargs={'device': 'cpu'},
-    #             encode_kwargs={'normalize_embeddings': True}
-    #         )
-            
-    #         vector_store = Chroma(
-    #             persist_directory=chroma_db_path,
-    #             embedding_function=embeddings
-    #         )
-            
-    #         # 检查是否有文档
-    #         if vector_store._collection.count() > 0:
-    #             st.session_state.vector_store = vector_store
-    #             st.session_state.vector_store_initialized = True
-    #             st.sidebar.success("✅ 加载分批处理生成的向量库成功")
-    #             return vector_store
-    #     except Exception as e:
-    #         st.sidebar.warning(f"⚠️ 加载分批向量库失败: {e}")
+    # 检查当前目录状态
+    if os.path.exists(chroma_db_path):
+        file_count = len([f for f in os.listdir(chroma_db_path) if os.path.isfile(os.path.join(chroma_db_path, f))])
+        st.sidebar.info(f"📊 当前目录状态: 存在, {file_count}个文件")
+    else:
+        st.sidebar.warning(f"📁 目录不存在: {chroma_db_path}")
     
-    # ========== 原有的SmartVectorStore加载逻辑 ==========
+    # 初始化下载成功标志
+    download_success = False
+    
+    # ========== 第一步：尝试从R2下载 ==========
+    if is_streamlit_cloud():  # 只在Cloud环境尝试R2下载
+        st.sidebar.info("🔄 尝试从Cloudflare R2下载向量库...")
+        download_success = try_download_from_r2(chroma_db_path)
+        
+        if download_success:
+            st.sidebar.success("✅ 从R2下载并解压成功！")
+            
+            # 验证下载后的文件
+            if os.path.exists(chroma_db_path):
+                files = os.listdir(chroma_db_path)
+                st.sidebar.info(f"📊 下载后目录文件数: {len(files)}")
+                if 'chroma.sqlite3' in files:
+                    st.sidebar.success("✅ chroma.sqlite3 存在，向量库完整")
+                else:
+                    st.sidebar.error("❌ chroma.sqlite3 不存在，向量库可能损坏")
+        else:
+            st.sidebar.warning("⚠️ 从R2下载失败，尝试本地加载")
+    
+    # ========== 第二步：尝试本地加载（原有逻辑）==========
+    # 检查status_file
     status_file = os.path.join(chroma_db_path, "generation_status.json")
     if os.path.exists(status_file):
         try:
@@ -550,18 +740,19 @@ def initialize_vector_store_once():
                         st.session_state.vector_store = vector_store
                         st.session_state.vector_store_initialized = True
                         st.sidebar.success("✅ 从文件恢复知识库状态成功")
+                        
+                        # 上传到R2备份（如果是Cloud环境且之前下载失败的情况）
+                        if is_streamlit_cloud() and not download_success:
+                            st.sidebar.info("🔄 备份现有向量库到R2...")
+                            upload_to_r2(chroma_db_path)
+                        
                         return vector_store
-                except:
-                    pass
-        except:
-            pass
-
-
-    # ========== 新增结束 ==========
+                except Exception as e:
+                    st.sidebar.warning(f"⚠️ 从status_file加载失败: {e}")
+        except Exception as e:
+            st.sidebar.warning(f"⚠️ 读取status_file失败: {e}")
     
-    pdf_data_path = get_pdf_data_path()
-    
-    # 检查向量库是否已存在（原有逻辑）
+    # 检查向量库是否已存在
     if os.path.exists(chroma_db_path) and os.listdir(chroma_db_path):
         try:
             vector_store = SmartVectorStore(persist_directory=chroma_db_path)
@@ -569,9 +760,18 @@ def initialize_vector_store_once():
                 st.session_state.vector_store = vector_store
                 st.session_state.vector_store_initialized = True
                 st.sidebar.success("✅ 加载现有知识库成功")
+                
+                # 上传到R2备份（如果是Cloud环境且之前下载失败的情况）
+                if is_streamlit_cloud() and not download_success:
+                    st.sidebar.info("🔄 备份现有向量库到R2...")
+                    upload_to_r2(chroma_db_path)
+                
                 return vector_store
         except Exception as e:
             st.sidebar.warning(f"⚠️ 加载失败: {e}")
+    
+    # ========== 第三步：需要重新生成 ==========
+    pdf_data_path = get_pdf_data_path()
     
     # 检查是否有PDF文件需要处理
     if not os.path.exists(pdf_data_path):
@@ -586,8 +786,16 @@ def initialize_vector_store_once():
     # 显示生成选项
     with st.sidebar:
         st.markdown("### 🏗️ 知识库生成")
+        st.warning("⚠️ 未找到现有向量库，需要重新生成（约30分钟）")
         if st.button("🚀 生成知识库", type="primary", key="generate_kb_main"):
-            return generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
+            vector_store = generate_vector_store_from_pdfs(pdf_data_path, chroma_db_path)
+            
+            # 生成成功后上传到R2
+            if vector_store and is_streamlit_cloud():
+                st.sidebar.info("🔄 上传新生成的向量库到R2...")
+                upload_to_r2(chroma_db_path)
+            
+            return vector_store
     
     return None
 
